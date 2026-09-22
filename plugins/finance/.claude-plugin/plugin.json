@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "finance",
+  "version": "0.1.0",
+  "description": "Finance workflows: budget variance analysis, forecast reviews, expense policy checks and board-ready summaries.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/catylai-marketplace",
+  "repository": "https://github.com/CatylAI/catylai-marketplace",
+  "license": "MIT",
+  "keywords": ["finance", "budget", "forecast", "variance"]
+}

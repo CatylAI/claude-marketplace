@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "customer-support",
+  "version": "0.1.0",
+  "description": "Support workflows: ticket replies in your tone, escalation triage, knowledge base articles and macros.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/catylai-marketplace",
+  "repository": "https://github.com/CatylAI/catylai-marketplace",
+  "license": "MIT",
+  "keywords": ["support", "tickets", "helpdesk", "escalation"]
+}

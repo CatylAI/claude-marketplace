@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "project-management",
+  "version": "0.1.0",
+  "description": "Project workflows: status reports, risk registers, RACI charts and sprint retrospectives.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/catylai-marketplace",
+  "repository": "https://github.com/CatylAI/catylai-marketplace",
+  "license": "MIT",
+  "keywords": ["project-management", "status", "risks", "retro"]
+}

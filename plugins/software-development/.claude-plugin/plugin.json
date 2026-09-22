@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "software-development",
+  "version": "0.1.0",
+  "description": "Engineering workflows: architecture decision records, code review checklists, release notes and design docs.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/catylai-marketplace",
+  "repository": "https://github.com/CatylAI/catylai-marketplace",
+  "license": "MIT",
+  "keywords": ["engineering", "adr", "code-review", "typescript"]
+}
