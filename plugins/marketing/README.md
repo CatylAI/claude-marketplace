@@ -5,7 +5,7 @@ Marketing workflows: campaign briefs, brand voice enforcement, content calendars
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install marketing@catylai
 ```
 

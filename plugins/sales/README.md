@@ -5,7 +5,7 @@ Sales workflows: discovery call prep, objection handling, proposal drafting and 
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install sales@catylai
 ```
 

@@ -5,7 +5,7 @@ Finance workflows: budget variance analysis, forecast reviews, expense policy ch
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install finance@catylai
 ```
 

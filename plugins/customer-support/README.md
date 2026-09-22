@@ -5,7 +5,7 @@ Support workflows: ticket replies in your tone, escalation triage, knowledge bas
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install customer-support@catylai
 ```
 

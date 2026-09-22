@@ -7,8 +7,8 @@
     "name": "CatylAI",
     "email": "shawn@catylai.com"
   },
-  "homepage": "https://github.com/CatylAI/catylai-marketplace",
-  "repository": "https://github.com/CatylAI/catylai-marketplace",
+  "homepage": "https://github.com/CatylAI/claude-marketplace",
+  "repository": "https://github.com/CatylAI/claude-marketplace",
   "license": "MIT",
   "keywords": ["engineering", "adr", "code-review", "typescript"]
 }

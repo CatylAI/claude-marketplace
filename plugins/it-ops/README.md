@@ -5,7 +5,7 @@ IT and SRE workflows: runbooks, incident postmortems, change requests and on-cal
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install it-ops@catylai
 ```
 

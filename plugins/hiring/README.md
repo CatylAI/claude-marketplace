@@ -5,7 +5,7 @@ Recruiting workflows: job descriptions, structured interview scorecards, resume 
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install hiring@catylai
 ```
 

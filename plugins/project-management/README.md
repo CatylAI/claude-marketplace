@@ -5,7 +5,7 @@ Project workflows: status reports, risk registers, RACI charts and sprint retros
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install project-management@catylai
 ```
 

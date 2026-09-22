@@ -5,7 +5,7 @@ Business-workflow plugins for [Claude Code](https://code.claude.com), built by [
 ## Install
 
 ```
-/plugin marketplace add CatylAI/catylai-marketplace
+/plugin marketplace add CatylAI/claude-marketplace
 /plugin install <plugin>@catylai
 ```
 
