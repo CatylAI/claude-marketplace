@@ -8,7 +8,7 @@
   },
   "metadata": {
     "description": "CatylAI business plugins for Claude Code: hiring, sales, marketing, software development, customer support, finance, IT operations and project management.",
-    "version": "0.1.1"
+    "version": "0.1.2"
   },
   "plugins": [
     {
