@@ -1,0 +1,19 @@
+{
+  "name": "claude-craft",
+  "version": "0.4.0",
+  "description": "Architecture guidance for building Claude Agent SDK systems: loop control, orchestration, tool design and context economy, plus configuration audits and multi-worktree release workflows.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "agent-sdk",
+    "authoring",
+    "architecture"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}

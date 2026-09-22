@@ -1,0 +1,137 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/session-start.ts"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/user-prompt-submit.ts"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-compact.ts"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/stop.ts"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-bash.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Write|Edit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-write-edit.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^Agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-agent.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-mcp-tool.ts"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-bash.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Write|Edit)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-write-edit.ts"
+          },
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-type-check.ts"
+          },
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-test.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^TodoWrite$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-todo.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^Agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-agent.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-mcp-tool.ts"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "github-issues",
+  "version": "0.1.0",
+  "description": "GitHub adapter for issue-tracker-core: the concrete gh calls for issues, labels, milestones, sub-issues and Projects v2.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "issues",
+    "triage",
+    "project-management",
+    "gh-cli"
+  ],
+  "dependencies": [
+    "issue-tracker-core"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "dev-standards",
+  "version": "0.4.0",
+  "description": "Vendor-neutral engineering standards: agent contracts, code review rubric, commit conventions and testing discipline.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/claude-marketplace",
+  "repository": "https://github.com/CatylAI/claude-marketplace",
+  "license": "MIT",
+  "keywords": [
+    "standards",
+    "code-review",
+    "testing",
+    "conventions"
+  ]
+}

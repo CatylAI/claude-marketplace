@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "dependency-upgrades",
+  "version": "0.1.0",
+  "description": "Cross-language dependency and runtime upgrades bounded by the deployment ceiling, gated on test adequacy, ranked by support status, one change per commit.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dependencies",
+    "upgrades",
+    "runtime-versions",
+    "terraform",
+    "maintenance"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}

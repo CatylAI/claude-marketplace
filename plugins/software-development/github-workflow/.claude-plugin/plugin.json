@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "github-workflow",
+  "version": "0.1.2",
+  "description": "GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "pull-request",
+    "code-review",
+    "actions",
+    "ci"
+  ],
+  "dependencies": [
+    "code-review-core"
+  ]
+}

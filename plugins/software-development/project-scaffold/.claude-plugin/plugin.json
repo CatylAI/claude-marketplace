@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "project-scaffold",
+  "version": "0.2.1",
+  "description": "Bootstrap a new project and run a proof of concept: repo layout, ADR adoption, and a POC lifecycle that graduates or kills on evidence.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "scaffolding",
+    "adr",
+    "poc",
+    "bootstrap"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}

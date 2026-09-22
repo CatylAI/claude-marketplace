@@ -1,0 +1,254 @@
+# Pre-commit configuration — baseline template
+#
+# Copy into a repo root as `.pre-commit-config.yaml`, enable the sections whose file types
+# the repo actually has, and leave the rest commented out with a one-line reason.
+# See the `precommit-standards` skill for the review procedure and the drift categories.
+#
+# SECTION GUIDE
+# ─────────────
+# [CORE]      Always enabled — universal hygiene and conventional commits
+# [PYTHON]    Enable for repos with Python source (ruff, mypy, pyupgrade)
+# [TERRAFORM] Enable for repos with .tf files
+# [SHELL]     Enable when shell scripts are present
+# [SECURITY]  Always enabled — secret scanning, IaC policy
+# [NODEJS]    Enable for repos with package.json
+#
+# GENERATED ARTIFACTS: machine-emitted files (rendered diagrams, generated SVGs and PNGs)
+# do not obey the whitespace and EOF rules a source file does — a diagram renderer writes
+# SVGs with no trailing newline, so end-of-file-fixer "fixes" them on every `--all-files`
+# run, producing spurious diffs outside the change under review. The top-level `exclude:`
+# below covers that tree and the rest of the canonical noise set. Keep it one alternation.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTALLED HOOK TYPES — load-bearing, do not drop
+# ─────────────────────────────────────────────────────────────────────────────
+# Without this, `pre-commit install` writes ONLY the pre-commit shim. Every
+# `stages: [pre-push]` and `stages: [commit-msg]` hook below is then declared and never
+# executed — a hook that never runs is indistinguishable from a hook that passes.
+#
+# Changing this list does NOT retro-install anything. Existing clones need one command:
+#   pre-commit install --install-hooks
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CANONICAL EXCLUSIONS
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependency trees, caches, build output, lockfiles, minified assets and agent scratch
+# directories. NOTE this reaches pre-commit ONLY — hooks that run with
+# `pass_filenames: false` (whole-tree scanners) each need their own ignore config.
+#
+# Two entries are deliberately absent: any first-party source directory, and
+# `.terraform.lock.hcl` (it is the providers-lock hook's own trigger — excluding it
+# disables the hook).
+exclude: |
+  (?x)^(
+      (?:[^/]+/)*(?:node_modules|\.venv|venv|__pycache__|\.ruff_cache|\.mypy_cache
+        |\.pytest_cache|\.tox|\.terraform|\.terragrunt-cache|\.next|\.swc|\.nuxt
+        |htmlcov|coverage|dist|build|out|target)/
+    |\.(?:worktrees|orchestration|code-review|doc-review|cleanup|review
+        |planning|ci-analysis|codebase-intel|build|task)/
+    |vendor/
+    |(?:[^/]+/)*(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock
+        |Cargo\.lock|Gemfile\.lock|composer\.lock)$
+    |(?:[^/]+/)*[^/]*\.sum$
+    |(?:[^/]+/)*[^/]*\.min\.(?:js|css)$
+    |(?:[^/]+/)*[^/]*\.tsbuildinfo$
+    |(?:[^/]+/)*\.DS_Store$
+  )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [CORE] Universal hooks
+# ─────────────────────────────────────────────────────────────────────────────
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: "v6.0.0"
+  hooks:
+  - id: check-added-large-files
+    args: ['--maxkb=500']
+  - id: check-case-conflict
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-symlinks
+  - id: check-toml
+  - id: check-xml
+  - id: check-yaml
+    args: ['--unsafe']  # allow CI-specific YAML tags
+  - id: detect-private-key
+  - id: end-of-file-fixer
+  - id: forbid-submodules   # remove in a repo that legitimately ships one (see note)
+  - id: pretty-format-json
+    args: ['--autofix']
+  - id: trailing-whitespace
+  - id: requirements-txt-fixer
+
+# forbid-submodules NOTE: pre-commit tags a gitlink as `directory`, and its file list is
+# `git ls-files`, so a repo that genuinely ships a submodule fails this hook under
+# `--all-files`. Drop the hook in that repo rather than excluding the path.
+
+# Conventional commit enforcement — required for semver and release-note automation.
+# This only runs where the commit-msg shim is installed; see default_install_hook_types.
+- repo: https://github.com/compilerla/conventional-pre-commit
+  rev: "v4.4.0"
+  hooks:
+  - id: conventional-pre-commit
+    stages: [commit-msg]
+    args:
+      - feat
+      - fix
+      - docs
+      - style
+      - refactor
+      - perf
+      - test
+      - build
+      - ci
+      - chore
+      - revert
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [PYTHON] Uncomment if the repo contains Python source
+# ─────────────────────────────────────────────────────────────────────────────
+# - repo: https://github.com/astral-sh/ruff-pre-commit
+#   rev: "v0.15.14"
+#   hooks:
+#     - id: ruff
+#       args: [--fix]
+#     - id: ruff-format
+#       args: [--check]   # fail on unformatted rather than rewriting mid-commit
+#
+# - repo: https://github.com/asottile/pyupgrade
+#   rev: "v3.21.2"
+#   hooks:
+#     - id: pyupgrade
+#       args: [--py312-plus]
+#
+# - repo: https://github.com/pre-commit/mirrors-mypy
+#   rev: "v1.14.0"
+#   hooks:
+#     - id: mypy
+#       additional_dependencies: ["pydantic-settings"]
+#       args: [--ignore-missing-imports]
+#
+# Python test suite — PRE-PUSH, not pre-commit. A suite measured near a minute at commit
+# stage is the cost that gets a whole config disabled, which leaves nothing. Resolve the
+# interpreter at run time and FAIL LOUDLY if the venv is missing rather than exiting 127
+# with a bare "command not found".
+# - repo: local
+#   hooks:
+#     - id: pytest-unit
+#       name: pytest unit suite (pre-push)
+#       entry: >
+#         sh -c 'root=$(git rev-parse --show-toplevel);
+#         if [ -x "$root/.venv/bin/pytest" ]; then py="$root/.venv/bin/pytest";
+#         elif command -v pytest >/dev/null 2>&1; then py=pytest;
+#         else echo "pytest not found (no .venv/bin/pytest, none on PATH) — FIX THE ENV, not this hook"; exit 1; fi;
+#         "$py" tests/ -m "not integration and not e2e" -q'
+#       language: system
+#       pass_filenames: false
+#       stages: [pre-push]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [TERRAFORM] Uncomment if the repo contains .tf files
+# ─────────────────────────────────────────────────────────────────────────────
+# - repo: https://github.com/antonbabenko/pre-commit-terraform
+#   rev: "v1.105.0"
+#   hooks:
+#     - id: terraform_fmt
+#       args: [--args=-recursive]
+#     - id: terraform_docs
+#       args:
+#         - --hook-config=--path-to-file=TFDOC.md
+#         - --hook-config=--add-to-existing-file=true
+#         - --hook-config=--create-file-if-not-exist=true
+#     - id: terraform_validate
+#       stages: [manual]  # `terraform init` downloads modules and can corrupt the worktree
+#       args:             # index mid-commit. Keep it OFF the commit stage; CI validates.
+#         - --hook-config=--retry-once-with-cleanup=true
+#         - --hook-config=--init-args=-backend=false
+#     - id: terraform_providers_lock
+#     - id: terraform_tflint
+#       stages: [manual]  # deep cloud checks need credentials — CI only
+#       args:
+#         - "--args=--config=__GIT_WORKING_DIR__/.tflint.hcl --color --recursive --minimum-failure-severity=error"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [SHELL] Enable when shell scripts are present
+# ─────────────────────────────────────────────────────────────────────────────
+- repo: https://github.com/shellcheck-py/shellcheck-py
+  rev: "v0.11.0.1"
+  hooks:
+    - id: shellcheck
+      args: ['-x', '-e', 'SC1091']
+      # Agent hook directories often carry zsh shebangs, which shellcheck aborts on
+      # with SC1071.
+      exclude: '^\.claude/hooks/'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [SECURITY] Always enabled
+# ─────────────────────────────────────────────────────────────────────────────
+# Two secret scanners, deliberately. Their rulesets disagree at the edges — one vendor's
+# allowlist has been observed suppressing a live cloud key the other caught. Do not
+# consolidate this down to one.
+- repo: https://github.com/gitleaks/gitleaks
+  rev: "v8.30.1"
+  hooks:
+    - id: gitleaks
+
+- repo: local
+  hooks:
+    - id: trivy-secret
+      name: Trivy secret scan
+      # An explicit if/else, NOT `command -v trivy && trivy … || echo "not installed"`.
+      # That form is `(A && B) || C`: when trivy IS present and FINDS a secret, B exits 1,
+      # so C runs, the hook exits 0, and it prints "trivy not installed" — a found secret
+      # reported as a missing tool, and the commit proceeds. If you edit this entry, keep
+      # the tool-absent case in its own branch.
+      entry: >
+        sh -c 'if command -v trivy >/dev/null 2>&1; then
+        trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1
+        --skip-dirs .worktrees --skip-dirs node_modules --skip-dirs .venv .;
+        else echo "trivy not installed — secret scan SKIPPED (gitleaks still ran)"; fi'
+      language: system
+      pass_filenames: false
+      stages: [pre-commit]
+
+# IaC policy scan — enable when .tf, Dockerfile, or CloudFormation files exist.
+# Pin language_version: checkov has segfaulted under newer Python runtimes.
+# - repo: https://github.com/bridgecrewio/checkov.git
+#   rev: '3.2.529'
+#   hooks:
+#   - id: checkov
+#     verbose: true
+#     language_version: python3.13
+#     args: [--config-file=.checkov.yaml, --skip-path=venv, --download-external-modules=false]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [NODEJS] Uncomment if the repo contains package.json
+# ─────────────────────────────────────────────────────────────────────────────
+# Lint, typecheck and tests are PRE-PUSH. Typical measurements on a mid-size frontend:
+# eslint ~13s, tsc ~4s, unit tests ~30s — tolerable per push, not per commit.
+#
+# Test-runner NOTE: scope the run to the main tree. A repo using git worktrees under
+# .worktrees/ will otherwise collect every worktree's copy of every suite — hundreds of
+# stale paths, minutes of runtime, and a red result caused entirely by copies. It is green
+# in CI (no worktrees there), which is why it goes unnoticed for a long time.
+# - repo: local
+#   hooks:
+#     - id: ci-lint
+#       name: eslint (pre-push)
+#       entry: npx eslint --max-warnings=0
+#       language: system
+#       pass_filenames: false
+#       stages: [pre-push]
+#     - id: ci-typecheck
+#       name: tsc --noEmit (pre-push)
+#       entry: npx tsc --noEmit
+#       language: system
+#       pass_filenames: false
+#       stages: [pre-push]
+#     - id: ci-test-unit
+#       name: unit tests (pre-push)
+#       entry: npx jest --ci --testPathIgnorePatterns '/node_modules/' '/\.worktrees/' '/\.next/' '/out/'
+#       language: system
+#       pass_filenames: false
+#       stages: [pre-push]

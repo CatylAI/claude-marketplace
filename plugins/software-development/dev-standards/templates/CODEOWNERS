@@ -1,0 +1,135 @@
+# CODEOWNERS — baseline template
+#
+# HOW TO USE THIS FILE
+#   1. Copy it to exactly ONE of the locations your forge reads: the repository root,
+#      or the forge's config directory, or docs/. Never two — most forges read only one,
+#      and the other silently becomes dead config that nobody notices is dead.
+#   2. Keep the [BASELINE] rule. Delete every [OPTIONAL] rule you do not need.
+#   3. Keep the owning group on every rule you keep. That is the whole standard.
+#   4. Verify on a live OPEN pull request, not by re-reading this file. Query the
+#      request's approval state and confirm every code-owner rule shows a non-empty
+#      eligible-approvers list.
+#
+#      NOT on the request that adds this file. Forges evaluate CODEOWNERS from the
+#      TARGET branch, so on a first-adoption change the target branch has no owners file
+#      yet and the approval state reports no code-owner rule at all. An empty result
+#      there means NOT YET VERIFIABLE — neither a pass nor a defect. Merge the adoption
+#      change first, then check the approval state on the NEXT open request in the repo.
+#
+# ---------------------------------------------------------------------------------------
+# THE ONE REQUIREMENT: every rule names the owning group.
+#
+# Individual owners are ADDITIVE alongside the group, never instead of it. Owners within a
+# single rule are OR, not AND: a three-owner rule yields ONE approval rule whose eligible
+# approvers are the union of the named individuals and the group's members, with a single
+# required count. Naming the group only ever WIDENS who may approve. It never adds a
+# second required approval.
+#
+# ---------------------------------------------------------------------------------------
+# WHY EVERY RULE, AND NOT JUST THE CATCH-ALL
+#
+# Only the LAST matching pattern applies. Matches are NOT unioned.
+#
+# A change touching a single file under infrastructure/terraform/ matches both `*` and
+# `*.tf`, and the approval state returns exactly ONE code-owner rule — `*.tf`. The `*`
+# rule does not appear at all.
+#
+# So the catch-all below protects only the paths that NO other rule matches. Every rule you
+# add takes its paths out of the catch-all's coverage and becomes their sole gate. Adding a
+# path rule without the group therefore REMOVES protection rather than adding it.
+#
+# ---------------------------------------------------------------------------------------
+# WHY A GROUP, AND NOT A PERSON
+#
+# The author of a change is removed from the eligible approvers — the forge drops them
+# rather than rejecting an approval attempt. So a rule whose only owner is one individual
+# reports zero required approvals on any change that person authors. It does not block. It
+# silently disappears from the gate while still rendering as a named rule in the approval
+# state, which is why this class of defect survives code review.
+#
+# The observed failure: a `*.tf` rule naming one individual, on a change to the terraform
+# that deploys staging and production, reported required=0 / approved=true, and no
+# code-owner review was ever required.
+#
+# A group cannot fail that way: it has several members, so at least one non-author owner
+# always remains.
+#
+# ---------------------------------------------------------------------------------------
+# A HANDLE THAT RESOLVES IS NOT AN OWNER
+#
+# An owner must be a member of THE PROJECT. A handle naming a real, active user who is not
+# a project member contributes nothing, and the forge reports no error — the rule simply
+# has no eligible approvers, so it requires nothing.
+#
+# This bites hardest where one person holds two accounts with the same display name: the
+# personal one is not a member, the org one is, and rules across many repos name the wrong
+# one. Check a handle with a PROJECT MEMBERSHIP query, never with username resolution.
+#
+# The same applies to GROUPS: a group outside the project's own namespace must be
+# explicitly shared with the project, or it confers nothing.
+#
+# ---------------------------------------------------------------------------------------
+# DO NOT USE SECTION SYNTAX ([Backend], ^[Optional][2]) unless your team already has a
+# working example. Sections carry their own approvals count and an optional marker, which
+# changes every piece of per-rule reasoning above.
+# =======================================================================================
+
+
+# ── [BASELINE] — required in every repo ────────────────────────────────────────────────
+#
+# Keep this even if you add nothing else. One group-owned catch-all is the shape that
+# cannot fail in either direction. If this is the ONLY rule in the file, the file is
+# correct and complete.
+#
+# It must come FIRST: general-to-specific is the convention that reads correctly against
+# last-match-wins.
+
+*                                       @your-org/your-review-group
+
+
+# ── [OPTIONAL] Add a rule ONLY to give a path EXTRA owners ─────────────────────────────
+#
+# A rule that names the same owners as the catch-all is pure liability: it changes nothing,
+# and it is one more line that can lose the group in a later edit. Add a path rule only
+# when a specific reviewer must see that path.
+#
+# Every line below keeps the owning group. Delete the ones that do not apply to this repo.
+
+# --- Deploy-bearing files. Infrastructure and CI config are the highest-blast-radius
+# --- paths in every project shape, which is why the failure above happened on exactly these.
+# *.tf                                  @your-org/infra-group @your-org/your-review-group
+# *.tfvars                              @your-org/infra-group @your-org/your-review-group
+# <ci-config-path>                      @your-org/infra-group @your-org/your-review-group
+#   ^ your forge's pipeline definition — a top-level CI file, or the directory holding
+#     workflow definitions. Use whichever path this repo actually has.
+# Dockerfile*                           @your-org/infra-group @your-org/your-review-group
+
+# --- Backend service.
+# src/                                  @your-org/your-review-group
+# tests/                                @your-org/your-review-group
+
+# --- API and shared libraries.
+# database/                             @your-org/your-review-group
+# shared_libs/                          @your-org/your-review-group
+
+# --- Frontend application.
+# src/app/                              @your-org/your-review-group
+# next.config.ts                        @your-org/your-review-group
+# package.json                          @your-org/your-review-group
+
+# --- Monorepo with submodules and a docs site.
+# apps/                                 @your-org/your-review-group
+# content/                              @your-org/your-review-group
+# .gitmodules                           @your-org/your-review-group
+# vendor/                               @your-org/your-review-group
+#   NOTE a submodule is a gitlink: a directory-suffixed pattern targets files WITHIN the
+#   directory, and a submodule contributes none, so `vendor/<submodule>/` may match nothing
+#   at all. Settle it with an open request that bumps the submodule pointer.
+
+# --- CI component / template library.
+# templates/                            @your-org/your-review-group
+# scripts/                              @your-org/your-review-group
+
+# --- Agent plugin / marketplace.
+# .claude-plugin/                       @your-org/your-review-group
+# plugins/                              @your-org/your-review-group

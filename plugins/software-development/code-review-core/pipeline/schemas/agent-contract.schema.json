@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CatylAI/claude-marketplace/schemas/agent-contract.schema.json",
+  "title": "Agent contract document",
+  "description": "The .code-review/{CATEGORY}.json contract a gate agent writes. GENERATED from contract.py's constants by contract_schema(); do not hand-edit. Regenerate with scripts/check-contract-schema.sh --write.",
+  "type": "object",
+  "required": [
+    "agent",
+    "category",
+    "findings"
+  ],
+  "properties": {
+    "agent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_branch": {
+      "type": "string"
+    },
+    "target_branch": {
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "APPROVE",
+        "REQUEST_CHANGES",
+        "INCOMPLETE"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocker": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "major": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ux_impact_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_pct": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "location",
+          "title",
+          "evidence",
+          "recommendation",
+          "ux_impact",
+          "in_diff",
+          "confidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "enum": [
+              "BLOCKER",
+              "MAJOR",
+              "MINOR",
+              "NIT"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "in_diff": {
+            "type": "boolean"
+          },
+          "ux_impact": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "scan_triage": {
+      "type": "array"
+    },
+    "rejected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocking_reason_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,20 @@
+{
+  "name": "gcp-observability",
+  "version": "0.1.0",
+  "description": "Google Cloud adapter for observability-core: concrete Cloud Logging, Monitoring and Error Reporting queries for incident response and production triage.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gcp",
+    "observability",
+    "incident",
+    "logging",
+    "triage"
+  ],
+  "dependencies": [
+    "observability-core"
+  ]
+}

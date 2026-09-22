@@ -1,0 +1,19 @@
+{
+  "name": "issue-tracker-core",
+  "version": "0.1.0",
+  "description": "Tracker-neutral issue discipline: the pre-work gate, branch and title conventions, status vocabulary, and parent-child hygiene.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "issues",
+    "workflow",
+    "tracking",
+    "conventions"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}

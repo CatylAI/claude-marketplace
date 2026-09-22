@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "dev-guardrails",
+  "version": "0.4.1",
+  "description": "Hooks that block unsafe shell and edit operations in flight: secret leaks, destructive git, and non-conventional commits.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "homepage": "https://github.com/CatylAI/claude-marketplace",
+  "repository": "https://github.com/CatylAI/claude-marketplace",
+  "license": "MIT",
+  "keywords": [
+    "hooks",
+    "safety",
+    "secrets",
+    "git"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}

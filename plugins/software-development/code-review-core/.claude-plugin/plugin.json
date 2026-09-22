@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "code-review-core",
+  "version": "0.3.1",
+  "description": "Forge-neutral code review: deterministic detectors find issues, bounded agents judge them, a validation pass owns the verdict.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "static-analysis",
+    "quality"
+  ],
+  "dependencies": [
+    "dev-standards"
+  ]
+}
