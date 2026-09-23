@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "gitlab-workflow",
+  "version": "0.1.0",
+  "description": "GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gitlab",
+    "merge-request",
+    "code-review",
+    "gitlab-ci",
+    "ci"
+  ],
+  "dependencies": [
+    "code-review-core"
+  ]
+}

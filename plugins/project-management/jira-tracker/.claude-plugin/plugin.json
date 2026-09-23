@@ -1,0 +1,20 @@
+{
+  "name": "jira-tracker",
+  "version": "0.1.0",
+  "description": "Jira adapter for issue-tracker-core: the concrete REST API v3 calls for the pre-work gate, the comment trail, transitions, JQL sweeps and epic/parent hygiene.",
+  "author": {
+    "name": "CatylAI",
+    "email": "shawn@catylai.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "jira",
+    "atlassian",
+    "issues",
+    "jql",
+    "project-management"
+  ],
+  "dependencies": [
+    "issue-tracker-core"
+  ]
+}

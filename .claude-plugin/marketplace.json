@@ -8,7 +8,7 @@
   },
   "metadata": {
     "description": "CatylAI business plugins for Claude Code: hiring, sales, marketing, software development, customer support, finance, IT operations and project management.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
@@ -35,6 +35,20 @@
         "quality"
       ],
       "category": "software-development"
+    },
+    {
+      "name": "datadog-observability",
+      "source": "./plugins/it-ops/datadog-observability",
+      "description": "Datadog adapter for observability-core: concrete log, metric, span, monitor and incident queries for incident response and production triage.",
+      "version": "0.1.0",
+      "keywords": [
+        "datadog",
+        "observability",
+        "incident",
+        "monitors",
+        "triage"
+      ],
+      "category": "it-ops"
     },
     {
       "name": "dependency-upgrades",
@@ -145,6 +159,20 @@
       "category": "software-development"
     },
     {
+      "name": "gitlab-workflow",
+      "source": "./plugins/software-development/gitlab-workflow",
+      "description": "GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.",
+      "version": "0.1.0",
+      "keywords": [
+        "gitlab",
+        "merge-request",
+        "code-review",
+        "gitlab-ci",
+        "ci"
+      ],
+      "category": "software-development"
+    },
+    {
       "name": "issue-tracker-core",
       "source": "./plugins/project-management/issue-tracker-core",
       "description": "Tracker-neutral issue discipline: the pre-work gate, branch and title conventions, status vocabulary, and parent-child hygiene.",
@@ -154,6 +182,20 @@
         "workflow",
         "tracking",
         "conventions"
+      ],
+      "category": "project-management"
+    },
+    {
+      "name": "jira-tracker",
+      "source": "./plugins/project-management/jira-tracker",
+      "description": "Jira adapter for issue-tracker-core: the concrete REST API v3 calls for the pre-work gate, the comment trail, transitions, JQL sweeps and epic/parent hygiene.",
+      "version": "0.1.0",
+      "keywords": [
+        "jira",
+        "atlassian",
+        "issues",
+        "jql",
+        "project-management"
       ],
       "category": "project-management"
     },
@@ -250,6 +292,20 @@
       "category": "sales"
     },
     {
+      "name": "snowflake-connector",
+      "source": "./plugins/software-development/snowflake-connector",
+      "description": "Bring-your-own-account Snowflake connector: a setup wizard for account identifier, auth method and role, plus the cost-aware discipline for querying a warehouse safely.",
+      "version": "0.1.0",
+      "keywords": [
+        "snowflake",
+        "sql",
+        "warehouse",
+        "analytics",
+        "cost"
+      ],
+      "category": "software-development"
+    },
+    {
       "name": "support-workflows",
       "source": "./plugins/customer-support/support-workflows",
       "description": "Support workflows: ticket replies in your tone, escalation triage, knowledge base articles and macros.",
@@ -261,6 +317,20 @@
         "escalation"
       ],
       "category": "customer-support"
+    },
+    {
+      "name": "terraform-aws",
+      "source": "./plugins/software-development/terraform-aws",
+      "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC federation from CI, zero-downtime database migrations, and the judgement half of an IaC review.",
+      "version": "0.1.0",
+      "keywords": [
+        "terraform",
+        "aws",
+        "iam",
+        "infrastructure",
+        "migrations"
+      ],
+      "category": "software-development"
     }
   ]
 }
