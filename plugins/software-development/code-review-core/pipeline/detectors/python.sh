@@ -57,7 +57,7 @@ if need ruff; then
   ruff check --output-format=json --no-cache --ignore-noqa "$@" > "$RAW/ruff.json" 2> "$RAW/.ruff.err"
   rc=$?
   if [ "$rc" -ge 2 ]; then
-    skip "ruff" "exited $rc: $(head -c 200 "$RAW/.ruff.err" | tr '\n' ' ')"
+    skip "ruff" "exited $rc: $(excerpt "$RAW/.ruff.err")"
     rm -f "$RAW/ruff.json"
   else
     [ -s "$RAW/ruff.json" ] || printf '[]\n' > "$RAW/ruff.json"
@@ -71,7 +71,7 @@ if need bandit; then
   # a silently suppressed bandit HIGH is a suppressed BLOCKER.
   bandit -f json -q --ignore-nosec "$@" > "$RAW/bandit.json" 2> "$RAW/.bandit.err"
   if [ ! -s "$RAW/bandit.json" ]; then
-    skip "bandit" "produced no output: $(head -c 200 "$RAW/.bandit.err" | tr '\n' ' ')"
+    skip "bandit" "produced no output: $(excerpt "$RAW/.bandit.err")"
     rm -f "$RAW/bandit.json"
   else
     note bandit "ok"
@@ -95,11 +95,11 @@ if need mypy; then
     # container without the venv installed it emits an import error for every third-party module —
     # noise, not findings. --ignore-missing-imports keeps it to real type errors in the changed
     # files, at the cost of missing genuine bad-import bugs. That trade is right for an advisory
-    # review scan; the project's own `make test-ci` does the strict pass.
+    # review scan; the project's own CI type-check job does the strict pass.
     mypy --output=json --no-error-summary --ignore-missing-imports "$@" \
       > "$RAW/mypy.json" 2> "$RAW/.mypy.err"
     if [ ! -s "$RAW/mypy.json" ] && [ -s "$RAW/.mypy.err" ]; then
-      skip "mypy" "no JSON output: $(head -c 200 "$RAW/.mypy.err" | tr '\n' ' ')"
+      skip "mypy" "no JSON output: $(excerpt "$RAW/.mypy.err")"
       rm -f "$RAW/mypy.json"
     else
       [ -f "$RAW/mypy.json" ] || : > "$RAW/mypy.json"
@@ -122,7 +122,7 @@ if need pylint; then
   # normalize.py drops convention/refactor as style noise — see its module docstring.
   pylint --output-format=json2 --score=n "$@" > "$RAW/pylint.json" 2> "$RAW/.pylint.err"
   if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$RAW/pylint.json" 2>/dev/null; then
-    skip "pylint" "unparseable output: $(head -c 200 "$RAW/.pylint.err" | tr '\n' ' ')"
+    skip "pylint" "unparseable output: $(excerpt "$RAW/.pylint.err")"
     rm -f "$RAW/pylint.json"
   else
     note pylint "ok"
@@ -134,8 +134,8 @@ fi
 # The suite needs the project's installed environment and its services (a DB, localstack), runs
 # via the project's own make target, and takes minutes to tens of minutes. Doing that inside a
 # review scan would make the scan slower and less reliable than the review it feeds, and in a bare
-# benchmark clone it fails outright. CI already runs `make test-ci` with `--junitxml` and
-# `--cov-report=xml` in a job far better placed for it.
+# benchmark clone it fails outright. The project's own CI test job, run with `--junitxml` and
+# `--cov-report=xml`, is far better placed for it.
 #
 # So the scanner INGESTS results that are already on disk (raw/pytest.json, raw/coverage.json) and
 # records a skip when they are absent. The test-failure and coverage-below-gate findings are wired

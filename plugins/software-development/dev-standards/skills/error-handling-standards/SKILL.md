@@ -1,30 +1,22 @@
 ---
 name: error-handling-standards
+description: "Use when a change touches try/except, catch, error callbacks, fallback defaults, retries or timeouts. Review procedure: list every handler first, name what each catch could hide, then test it against the acceptable-handler bar."
+when_to_use: "swallowed exception, except pass, catch that logs and continues, returns empty list on error, retry with no backoff, unawaited promise, is this error handling good enough"
 license: MIT
-description: How to review an error path — enumerate every error-handling site in the diff before judging any of them, and for each catch name every error type it could hide. Covers empty and log-and-continue catches, over-broad catches, fallback values indistinguishable from real results, uncapped or non-retryable retries, errors that cross a boundary without their cause, `finally` blocks that suppress the in-flight exception, and the async shapes. States what makes a handler acceptable, not only what makes one wrong. Use when a change touches try/except, catch, error callbacks, fallback defaults, retries or timeouts, or when writing an error path that has to survive review.
-when_to_use: "silent failure, swallowed exception, empty catch block, except pass, bare except, catch that logs and continues, returns empty list on error, fallback value hides the failure, retry with no backoff, retry a non-retryable error, unhandled promise rejection, unawaited promise, finally swallows the exception, error loses its cause, is this error handling good enough"
 ---
 
 # Error Handling Standards
 
-A linter already owns the crudest shapes in some languages and none of them in others. In Python,
-`bandit` B110 and B112 find `try/except: pass` and `try/except: continue`, and `ruff` E722 finds the
-bare `except:`. In TypeScript and JavaScript there is usually no linter running at all — check the
-scan summary for which tools did not run before assuming otherwise. So the mechanical half is
-uneven, and everything below the crudest shape is judgement in every language: whether the handler
-that *does* log is actually handling anything, and whether the value it returns is honest.
-
-This skill is the judgement half. It is written to be injected into a review pass that is already
-looking at error paths, and its job is to make that pass systematic rather than opportunistic.
+Linters own only the crudest shapes: in Python, `bandit` B110 and B112 find `try/except: pass` and
+`try/except: continue`, and `ruff` E722 finds the bare `except:`. Check the scan summary for which
+tools actually ran. Everything else is judgement: whether a handler that logs is handling anything,
+and whether the value it returns is honest. This skill is that judgement.
 
 ## Discover every site, then judge
 
-**Enumerate before you judge.** Walk the whole diff once and list every error-handling site. Only
-then go back and evaluate them. This ordering is the mechanism, not a formality: judging as you read
-means the first plausible-looking handler sets the bar, and every handler after it gets compared
-against that one instead of against the standard. It also means the handlers at the end of a long
-diff get the least attention, which is exactly backwards — they are the ones written last, in a
-hurry.
+Walk the whole diff once and list every error-handling site; only then evaluate them. Judging as
+you read lets the first plausible handler set the bar, and gives the handlers at the end of a long
+diff, often written last and in a hurry, the least attention.
 
 An error-handling site is any of these, and the list is deliberately wider than "try/catch":
 
@@ -46,19 +38,19 @@ an unstated list, because then nobody can tell whether the reviewer looked at fi
 
 Then, for each catch block in that list, answer one question before anything else:
 
-> **List every type of error this block could hide.**
+> List every type of error this block could hide.
 
 Not "what error was it written for" — what *else* lands in it. A block written for
 `requests.Timeout` that catches `Exception` also catches the `AttributeError` from the typo three
-lines up, the `KeyError` from the response shape changing, and the `KeyboardInterrupt` in languages
-where that is in the hierarchy. That enumeration is the content of the finding's `evidence` field.
+lines up and the `KeyError` from the response shape changing; a bare `except:` also takes
+`KeyboardInterrupt`, `SystemExit` and `asyncio.CancelledError`. That enumeration is the content of the finding's `evidence` field.
 It is what turns "this catch is too broad" from an opinion into a claim a reader can check, and it
 is the single highest-yield step in this skill.
 
 ## What an acceptable handler looks like
 
 A standard that only lists sins gives the reviewer nothing to pass. Here is the bar. A handler is
-acceptable when **all** of these hold:
+acceptable when all of these hold:
 
 1. **It catches a named type, or the narrowest one the language offers.** If the catch is broad, the
    body re-raises everything it did not mean to handle, and the code says which those are.
@@ -84,156 +76,13 @@ one of them is a finding at whatever severity the consequence earns — not auto
 
 ## The shapes that hide failures
 
-### Empty or comment-only catch
-
-```python
-except Exception:
-    pass          # nothing to do here
-```
-
-The comment does not change anything; a comment-only body is an empty body with a claim attached,
-and the claim — "nothing to do here" — is the thing under review. This shape is a defect on sight.
-The only version that survives is an explicitly-named type with a stated reason the failure is
-genuinely uninteresting, and even then the reason belongs in the code:
-
-```python
-except FileNotFoundError:
-    # First run: the cache file is created below. Any other OSError is a real problem.
-    pass
-```
-
-### Logs and continues as though nothing happened
-
-```javascript
-try {
-  await syncProfile(user);
-} catch (e) {
-  logger.error('sync failed', e);
-}
-// ...execution continues, and every line after this assumes the profile synced
-```
-
-This is the most common shape and the most often waved through, because the log line looks like
-handling. It is not. The log is for the operator; the *caller* still got a normal return and will
-behave as if the work happened. Ask the question that decides it: **what does the next line assume?**
-If the code after the block is only correct when the operation succeeded, the handler must either
-re-raise or return something the caller checks. A log is a record of a failure, not a response
-to one.
-
-### Over-broad catch
-
-`except Exception:`, `except:`, `catch (e)` with no type test, `rescue => e`. The bare form is the
-worst because it hides the typo alongside the network error it was written for: the
-`NameError`/`ReferenceError` from a misspelled variable inside the `try` lands in the same handler
-as the timeout, and the code reports "upstream unavailable" for a bug that has nothing to do with
-upstream. Debugging that costs hours, because the log line actively points the wrong way.
-
-The fix is a narrower catch, or a re-raise of what was not meant to be handled. The finding's
-evidence is the enumeration from the discovery step: name the specific unrelated errors this block
-swallows, from the code actually inside the `try`.
-
-### A fallback value indistinguishable from a real result
-
-**Give this one weight.** Returning an empty list on failure means the caller cannot tell "nothing
-matched" from "the query never ran":
-
-```python
-def find_expiring_licenses(org_id):
-    try:
-        return db.query(...).all()
-    except DatabaseError:
-        logger.error("license query failed", org_id=org_id)
-        return []        # the caller now believes nothing is expiring
-```
-
-Every caller of this function treats an empty list as good news. The renewal job runs, finds
-nothing, and reports success. Nobody is notified, the licences lapse, and the only evidence is a log
-line no one is reading. The same defect wears other clothes: `0` for a count, `None` for a lookup
-that legitimately returns `None`, `{}` for a config, `False` for a permission check, an empty string
-for a name. In each case the failure is encoded as an ordinary value that already means something
-else.
-
-Acceptable versions, in rough order of preference: propagate the error; return a result type that
-carries the failure arm; return a sentinel the caller must handle explicitly and that no successful
-path can produce. The test is not "is the fallback reasonable" — it is **"can the caller tell?"**
-
-### Retries that do not bound, back off, or discriminate
-
-Three separate defects, often together:
-
-- **No cap.** A loop that retries until it succeeds turns a dependency outage into an outage of your
-  own, and does it at whatever rate the loop allows.
-- **No backoff.** Immediate retries arrive while the dependency is still failing, and the retry
-  traffic is itself the reason it stays down. Jitter matters too — synchronized retries from many
-  workers reconstruct the thundering herd that backoff was meant to prevent.
-- **Retrying a non-retryable error.** A 400, a 401, a validation failure, a uniqueness violation, a
-  deserialization error: none of these gets better on the second attempt. Retrying them burns the
-  budget that the one retryable error in the batch needed, and multiplies any side effect the
-  request already had. A retry predicate that catches everything is an over-broad catch wearing a
-  loop.
-
-And the fourth, which belongs to the section above: a retry that **exhausts its attempts and returns
-the fallback**. The caller sees the fallback. Exhaustion must be recorded and must reach the caller.
-
-### An error that crosses a boundary and loses its cause
-
-```python
-except SomeLibraryError:
-    raise ServiceError("could not load the record")   # the original is gone
-```
-
-Re-wrapping an error at a module or service boundary is right — the caller should not have to know
-your database driver. Discarding the original is not. Without the cause, the stack trace stops at
-the boundary and every debugging session starts by guessing what was underneath.
-
-Use the language's chaining: `raise ... from err` in Python, `new Error(msg, { cause: err })` in
-JavaScript, `%w` in Go, `.context()` in Rust. Across a process boundary where an exception object
-cannot travel, carry a stable error code and the upstream detail in the payload. Note the exception
-to this rule: an error crossing a **trust** boundary to an end user is deliberately stripped, and
-the cause is recorded server-side instead — that is not loss, that is the leaky-error-message rule
-being obeyed.
-
-### `finally` that suppresses the in-flight exception
-
-```python
-try:
-    do_work()
-finally:
-    return cleanup_result      # swallows whatever do_work raised
-```
-
-A `return`, `break`, or `continue` inside `finally` discards the exception that was propagating —
-silently, with no handler anywhere and nothing in the logs. A `raise` from inside `finally` replaces
-it, which is nearly as bad: the cleanup failure masks the original failure that probably caused it.
-
-The rule: a cleanup block performs cleanup and nothing else. If cleanup can fail, catch that failure
-inside the cleanup block, log it, and let the original exception continue. The same applies to
-`defer` in Go that overwrites a named return, and to a context manager's `__exit__` returning a
-truthy value — which is an exception suppressed by a return value nobody reading the call site can
-see.
-
-### Async shapes
-
-The async forms hide failures in ways the synchronous review misses entirely, because the code
-*looks* like it has a handler:
-
-- **An unawaited promise.** `syncProfile(user);` with no `await` and no `.catch()`. The `try/catch`
-  wrapped around it catches nothing — the function returned before the work failed. This is the
-  async version of the empty catch and it is harder to see, because there is a catch block right
-  there. Check every call to an async function in the diff for the missing `await`.
-- **A rejection with no handler.** A promise stored, passed around, or fired into a collection
-  without a terminal `.catch()`. Depending on the runtime and version this is an unhandled-rejection
-  warning, a process crash, or nothing at all — and "nothing at all" is the case you are reviewing
-  for. `Promise.all` is worth its own look: the first rejection wins and the remaining results are
-  discarded, so use `allSettled` when the other outcomes matter.
-- **A cancelled context whose error is discarded.** `ctx.Err()` ignored, an `asyncio.CancelledError`
-  caught by a broad `except Exception` and swallowed, an `AbortSignal` whose `AbortError` is folded
-  into the generic failure path. Cancellation must propagate — a task that catches its own
-  cancellation and continues is unstoppable, and a shutdown that reports success while work is still
-  running is the degraded-result bug in another form.
-- **A background task whose result is never collected.** `create_task` with no reference held and no
-  exception handler: the exception is raised when the task is garbage-collected, into a handler
-  nobody installed.
+Check each listed site against the shapes in
+[references/failure-shapes.md](references/failure-shapes.md): empty or comment-only catches,
+log-and-continue, over-broad catches, fallbacks indistinguishable from real results, uncapped or
+indiscriminate retries, wrapped errors that lose their cause, `finally` that swallows the in-flight
+exception, and the async forms (unawaited promises, unhandled rejections, discarded cancellation,
+uncollected background tasks). The question that decides most of them: what does the next line
+assume, and can the caller tell that it failed?
 
 ## A degraded result must be distinguishable from a successful one
 
@@ -252,15 +101,15 @@ how much trust the output carries, which is why it is worst exactly where it is 
 the reporting layer, in CI gates, in health checks, in anything whose job is to tell you things are
 fine.
 
-**The fix is always the same shape: record the failure explicitly, as a separate thing from the
-result.** Not by refusing to degrade — degrading is often correct — but by making the degradation
+The fix is always the same shape: record the failure explicitly, as a separate thing from the
+result. Not by refusing to degrade — degrading is often correct — but by making the degradation
 visible in the output rather than encoding it as a normal value. A scan that ran with three of its
 ten tools missing reports the three by name alongside its findings, so a clean result and an
 unrun result cannot be confused. A gate that could not evaluate returns a third state that is not
 "pass". A function that failed returns something no successful call returns.
 
-When reviewing, apply it as a question: **if this code path were failing constantly in production,
-what would look different?** If the honest answer is "nothing", that is the finding, and its severity
+When reviewing, apply it as a question: if this code path were failing constantly in production,
+what would look different? If the honest answer is "nothing", that is the finding, and its severity
 is set by what the false reassurance is protecting.
 
 ## Severity
@@ -276,11 +125,8 @@ belongs in `in_diff`.
 | Medium / `MINOR` | A handler that works but is missing context in its log, is broader than it needs to be with no unrelated error actually reachable, an unhelpful user-facing message, or a wrapped error with no cause |
 | Low / `NIT` | Phrasing of a message, a log level one step off, a catch ordering that is stylistically odd but behaviourally identical |
 
-Note that the four tiers do not collapse to three. A source rubric with only CRITICAL/HIGH/MEDIUM
-has no bottom tier, so its MEDIUM absorbs both "this handler is missing context" and "this message
-reads awkwardly" — two things that must not share a bucket, because one should fail the job and the
-other must never block. Split them: **`MINOR` is the tier that blocks, `NIT` is the tier that never
-does.** When in doubt between the two, ask whether you would want the job to fail on it.
+When in doubt between `MINOR` and `NIT`, use the test in `code-review-standards`: `NIT` means no
+real impact.
 
 ## Writing the finding
 
@@ -293,9 +139,15 @@ Use the finding template from `code-review-standards`. Two additions specific to
   "A typo in the retry-count parsing on line 44 surfaces as `upstream unavailable`, and the on-call
   runbook for that message says to page the upstream team" is a finding.
 
-Do not file the same defect twice because it is visible from two of the shapes above. A retry that
+File each defect once, even when it is visible from two shapes. A retry that
 exhausts and returns `[]` is one finding, not a retry finding and a fallback finding — file it under
 whichever consequence is larger and mention the other in the description.
+
+## Verify
+
+Before returning, confirm that every site in the discovery list has a verdict (acceptable, or a
+finding), and that every over-broad-catch finding names concrete hidden error types in `evidence`.
+Without a checkout, run the same procedure over a pasted diff.
 
 ## Related
 

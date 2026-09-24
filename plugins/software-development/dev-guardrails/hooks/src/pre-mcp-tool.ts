@@ -9,6 +9,11 @@
 // It must be PreToolUse. A PostToolUse hook fires after the call returns, which is far too
 // late to stop a message that has already been sent.
 //
+// FAIL DIRECTION: OPEN. Unparseable stdin reads as `{}` and is allowed; an uncaught throw
+// exits 1, a non-blocking error. A false block would stop every publishing MCP call, and the
+// gate only blocks on a positive finding. Deny is exit 2 + stderr, which Claude reads as the
+// reason; the message says what to publish instead.
+//
 // It BLOCKS rather than redacting. A silently altered description is its own defect: the
 // author believes they published one thing and the reader sees another. Blocking hands the
 // decision back to a human, which is the right owner for "should this go out".
@@ -36,13 +41,21 @@ import { fileURLToPath } from 'node:url';
 /** Verbs that send something rather than fetch it. */
 const MUTATING_VERBS = [
   'create', 'add', 'update', 'edit', 'post', 'send', 'publish',
-  'announce', 'submit', 'schedule', 'reply', 'write',
+  'announce', 'submit', 'schedule', 'reply', 'write', 'push', 'forward',
 ];
 
-/** Surfaces that are durable, or that notify other people, or both. */
+/**
+ * Surfaces that are durable, or that notify other people, or both.
+ *
+ * `file`, `gist` and `snippet` matter as much as the chat surfaces: a forge MCP server's
+ * `create_or_update_file` / `push_files` commits straight into a repository, which is the
+ * exact outcome pre-write-edit exists to stop, reached without touching the local disk.
+ * `draft`, `mail` and `event` cover mail and calendar servers (a draft is one click from sent).
+ */
 const DURABLE_SURFACES = [
   'pull_request', 'merge_request', 'issue', 'comment', 'note', 'review',
   'wiki', 'page', 'discussion', 'message', 'canvas', 'thread', 'reply',
+  'file', 'gist', 'snippet', 'draft', 'mail', 'event',
 ];
 
 /** True when this MCP tool sends content somewhere it cannot easily be taken back. */

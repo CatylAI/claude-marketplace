@@ -1,140 +1,121 @@
 ---
 name: review-agents
-license: MIT
-description: "Audit a roster of subagent definitions for correct packaging, prompt quality, and selectability. Checks whether each agent earns being a separate process or is really a skill, whether its instruction body enumerates rules where three worked examples would generalize better, and whether its description is a usable routing signal for the orchestrator that has to pick it. Returns a reclassification table, example-substitution drafts, and frontmatter rewrites. Recommendations only — it never edits. Use after adding or changing agents, when an orchestrator keeps selecting the wrong one, or as a periodic roster sweep. Not for auditing skills, hooks, or settings."
-when_to_use: "audit my agents, review agent definitions, should this agent be a skill, agent description rewrite, orchestrator picks the wrong agent, agent roster sweep"
-user-invocable: true
-argument-hint: "[path to an agents directory; defaults to the repo's agents/ and ~/.claude/agents/]"
-allowed-tools: Read, Glob, Grep, Agent
+description: "Audits subagent definitions and reports which agents should be skills, which descriptions an orchestrator can't route on, which rule lists should become examples, and which frontmatter fields are ignored. Use after adding or changing agents, or when an orchestrator keeps picking the wrong one. Read-only. Not for skills (use review-skills); not for hooks (use review-hooks); not for a whole-configuration sweep (use config-audit)."
+when_to_use: "audit my agents, review agent definitions, should this agent be a skill, agent description rewrite, orchestrator picks the wrong agent"
+argument-hint: "[agents directory, or pasted agent file content; defaults to this repo's agents plus ~/.claude/agents/]"
+allowed-tools: Read, Glob, Grep
+disallowed-tools: Write, Edit, NotebookEdit
 context: fork
+license: MIT
 ---
 
 # Agent Roster Audit
 
-Evaluate every agent definition in scope across three dimensions — correct packaging, prompt
-quality, and discoverability — and return recommendations. Make no edits.
+Target: $ARGUMENTS
 
-Default targets when no path is given: `agents/*.md` and `plugins/*/agents/*.md` in the current
-repo, plus `~/.claude/agents/*.md` if it exists.
+Evaluate every agent definition in scope for packaging, frontmatter, prompt quality and routability.
+This is a report; the caller applies the fixes.
 
-## Background: agent or skill
+## Step 1 — Resolve the target and read the roster
 
-**Agents** are spawned as subprocesses. Each gets its own tool grant, model, turn ceiling, and
-context window. An orchestrator picks one by reading its `description`.
+- **A path:** read every `*.md` agent file under it.
+- **Empty:** glob `agents/*.md`, `.claude/agents/*.md` and `plugins/**/agents/*.md` in the working
+  directory, plus `~/.claude/agents/*.md`.
+- **Pasted agent content** (Cowork, or no checkout): audit that text. This fork can't see the
+  conversation, so pasted content only arrives through the argument.
+- **Nothing found:** return `No agent definitions found under <target>` plus the globs you tried,
+  and stop.
 
-**Skills** are instructions loaded into whatever session is already running, using whatever tools
-that session already has.
+Read each file in full before proposing a change to it. List the skills directories too: a
+"convert to skill" finding needs to know whether that skill exists, and an overlap finding needs both
+sides.
 
-The deciding question for every file: *does this need its own isolated tool set and execution
-environment, or is it Claude following a well-defined procedure?*
+## Step 2 — Packaging
 
-Signals it should be a **skill**: no meaningful `tools:` restriction; it is a checklist, a
-convention, or a reference; it is always invoked mid-session with nothing running beside it and
-nothing to isolate.
+For each agent, decide keep, convert to skill, or delete. The deciding question is whether it needs
+its own tool set, model, turn budget and context window, or whether it is Claude following a
+procedure.
 
-Signals it should stay an **agent**: a deliberate `tools:` narrowing; it runs in parallel with
-siblings; an orchestrator selects it from a list; it needs a model or turn budget different from
-its caller's; its output is a verdict and its working notes should not reach the caller.
+- A reviewer with `tools: Read, Grep` spawned for an isolated pass → **keep**. Tool narrowing or a
+  separate window each justify it.
+- A list of commit conventions with no tool restriction → **convert to skill**.
+- One agent analyses and another publishes → **keep both**. Flag overlap only for the same analysis.
+- No inbound reference and a scope another agent covers → **delete**, naming the agent that covers it.
 
-## Step 1 — Read the roster
+## Step 3 — Frontmatter
 
-Read every agent file. Read the skills directory listing too — a conversion recommendation needs to
-know whether a skill of that name already exists, and an overlap finding needs both sides.
+- **Ignored fields.** Agents shipped in a plugin ignore `hooks`, `mcpServers` and `permissionMode`.
+  Flag any plugin agent that sets them, and name what the author expected them to do. The field
+  looks active and isn't.
+- **`tools`:** least privilege, plain tool names. A read-only reviewer should also set
+  `disallowedTools: Write, Edit`. An agent that should not spawn subagents should leave `Agent` out
+  of `tools`.
+- **`maxTurns`:** present and consistent with any tool-call budget the body states. At the limit, the
+  caller receives the output marked partial.
+- **`model`:** set deliberately, or omitted to inherit.
+- **`skills:`** entries must name skills that exist. A dangling one is dropped with no visible
+  error; only the debug log records it. In a plugin agent, write another plugin's skill as
+  `plugin:skill`; a bare name resolves within the agent's own plugin. To confirm, run with `--debug`
+  and spawn the agent: each resolved entry logs `Preloaded skill '<entry>'`, and a dangling one logs
+  `Skill '<entry>' specified in frontmatter was not found`.
 
-## Step 2 — Packaging verdict
+## Step 4 — Rules to examples
 
-For each agent: **keep**, **convert to skill**, or **delete**.
+Look for sections that enumerate "if X then Y" conditions where the underlying call is a judgement.
+Replace them with two to four concrete examples that differ in situation but show one principle.
+Keep explicit rule tables where the agent is a gate applying a fixed checklist. For each section you
+flag, draft the replacement examples.
 
-Reason like this:
-
-- A reviewer with `tools: Read, Grep` spawned by a pipeline as an isolated pass over prepared
-  context → **keep**. Tool narrowing and a separate window each justify it on their own, even when
-  nothing runs beside it.
-- A file that is a list of commit-message conventions with no tool grant → **convert to skill**. It
-  is a reference the model follows, not a subprocess.
-- Two agents whose scopes differ (one analyses, one publishes the result) → **keep both**. Flag
-  overlap only when two agents perform the *same* analysis.
-- A file with no inbound reference anywhere and a scope another agent already covers →
-  **delete**, naming the agent that covers it.
-
-## Step 3 — Rules to examples
-
-Scan each instruction body for sections that enumerate conditions: long bullet lists of "if X then
-Y" rules covering edge cases. These are candidates to replace with three concrete examples.
-
-Models generalize from concrete patterns more reliably than they apply enumerated conditions. Three
-examples should differ in situation but demonstrate one consistent principle, so the model
-interpolates the fourth case you did not write.
-
-A rule block that should be replaced:
-
-```
+<example>
+Rule block:
 - If the branch starts with fix/, use fix as the type
-- If the branch starts with feat/, use feat as the type
-- If there is no issue key in the branch, use the component as the scope
-- If the change touches only tests, use test regardless of the branch
+- If there is no issue key, use the component as the scope
+- If only tests changed, use test regardless of the branch
+
+Replacement:
+Branch feat/PROJ-123-retry-logic → feat(PROJ-123): add queue retry with backoff
+Branch fix/api-null-pointer → fix(api): handle null in the stats aggregator
+Branch feat/PROJ-124-dashboard, only tests changed → test(PROJ-124): cover dashboard edge cases
+</example>
+
+## Step 5 — Description as a routing signal
+
+A strong description says when to pick the agent, what triggers it, and what it returns. It adds
+"use proactively" if the agent should auto-delegate.
+
+<example>
+Weak: "Helps debug problems."
+Strong: "Read-only root-cause analysis. Tests falsifiable hypotheses against evidence and returns a
+ranked diagnosis. Use proactively when a test fails for an unclear reason."
+</example>
+
+Also flag names too generic to tell apart from a neighbour, two descriptions that match the same
+request, and bodies long enough that detail should move into a referenced skill.
+
+## Step 6 — Verify before reporting
+
+For every delete or orphan claim, grep for the agent name across agents, skills, commands and
+instruction files, excluding the agent's own file. Drop the claim if anything references it.
+
+## Report
+
+```markdown
+# Agent audit: <target> (<n> agents)
+
+## Findings
+| # | Severity | Agent | Path | Problem | Fix |
+|---|----------|-------|------|---------|-----|
+
+## Example substitutions
+<per flagged section: file, heading, current rule block quoted, drafted examples>
+
+## Frontmatter rewrites
+<per agent: current description, proposed description, other field changes>
+
+## Not checked
+<paths that could not be read, or "none">
 ```
 
-The replacement:
-
-```
-Example 1 — feature branch carrying an issue key:
-  Branch: feat/PROJ-123-retry-logic
-  Commit: feat(PROJ-123): add queue retry with exponential backoff
-
-Example 2 — fix branch, no key, component scope:
-  Branch: fix/api-null-pointer
-  Commit: fix(api): handle null pointer in the stats aggregator
-
-Example 3 — branch says feature, diff says otherwise:
-  Branch: feat/PROJ-124-dashboard, but only test files changed
-  Commit: test(PROJ-124): cover dashboard edge cases
-```
-
-For every section you flag, draft the three replacement examples. A flag without drafted examples
-is not actionable.
-
-## Step 4 — Description as a routing signal
-
-The `description` is what an orchestrator matches against at selection time. A weak description
-says what the agent *is*. A strong one says *when to pick it*, *what triggers it*, and *what it
-returns*.
-
-| Weak | Strong |
-| --- | --- |
-| "Reviews code for security issues" | "Security-focused review of a change: injection vectors, credential handling, authorization gaps. Returns findings ranked by exploitability. Spawned by the review pipeline when the diff touches auth or input parsing." |
-| "Helps debug problems" | "Read-only root-cause analysis. Tests falsifiable hypotheses against observed evidence and returns a ranked diagnosis with a suggested fix direction. Never edits code." |
-
-Also flag:
-
-- names too generic to distinguish from a neighbour;
-- two descriptions that would both match the same request — the orchestrator will pick
-  arbitrarily, so sharpen one or merge them;
-- bodies long enough that the detail should move into a referenced skill, leaving the agent file to
-  carry the contract and the output shape;
-- a `skills:` reference to a skill that does not exist — a dangling injection is silent at load
-  time and missing at run time.
-
-## Output
-
-### 1. Packaging
-
-| Agent | Recommendation | Rationale |
-| --- | --- | --- |
-
-### 2. Example substitutions
-
-For each: the file, the section heading, the current rule block quoted, and the three drafted
-replacement examples.
-
-### 3. Frontmatter rewrites
-
-For each: the file, the current description, the proposed description, and any other field change
-(name, model, turn ceiling, tool grant).
-
-## Rules
-
-- One sentence of rationale per finding.
-- Never propose a change to a file you have not read in full.
-- Make no edits. Flag judgement calls rather than deciding them.
-- A healthy roster returns a short report.
+Severity is `critical` (an ignored or dangling field the agent depends on, or write access on a
+read-only role), `warning` (misclassified, weak routing signal) or `minor`. Sort by severity, with
+one sentence of rationale each. A healthy roster gets a short report with an empty findings table.

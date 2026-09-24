@@ -1,167 +1,153 @@
 ---
 name: review-hooks
-license: MIT
-description: "Audit hook scripts and their settings registrations together. Fans out four lenses in parallel: model-invocation cost inside hooks, process-spawn and duplicated-work overhead across handlers on the same event, written rules that are being relied on by memory and should be mechanically enforced instead, and staleness — dead branches, missing lifecycle coverage, absent CLI fallbacks, and mismatched timeouts. Returns one ranked synthesis citing file and line. Recommendations only — it never edits. Use after changing hooks, when edits feel slow, when a hook fires on the wrong files, or as a periodic sweep. Not for auditing skills, agents, or permission layering on their own."
-when_to_use: "audit my hooks, review hooks.json, hooks are slow, hook fires on the wrong files, should this rule be a hook, hook timeout, dead hook, hook settings review"
-user-invocable: true
-argument-hint: "[path to a hooks directory or settings file; defaults to the repo's .claude/ and ~/.claude/]"
-allowed-tools: Read, Glob, Grep, WebFetch, Agent, Bash(bash:*), Bash(command:*)
+description: "Audits hook scripts together with their settings registrations and reports costly model calls, duplicated handlers, written rules that should be hooks, and stale or mis-timed entries, each with file and line. Use when hooks are slow or fire on the wrong files, after changing hooks, or as a periodic sweep. Can execute a hook against a synthetic payload, after a permission prompt. Not for skills (use review-skills); not for permission layering (use config-audit)."
+when_to_use: "audit my hooks, review hooks.json, hooks are slow, hook fires on the wrong files, should this rule be a hook, dead hook, hook timeout"
+argument-hint: "[hooks directory, settings file, or pasted hook config; defaults to the repo's .claude/ and plugin hooks plus ~/.claude/]"
+allowed-tools: Read, Glob, Grep, WebFetch(domain:code.claude.com), Agent, Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/validate-hook-registration.sh" *), Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/lint-hook-source.sh" *)
+disallowed-tools: Write, Edit, NotebookEdit
 context: fork
+license: MIT
 ---
 
-# Hook Audit — Four Lenses in Parallel
+# Hook Audit
 
-Audit a hook system end to end: the scripts, the settings block that wires them, and the written
-rules they are supposed to be enforcing. Spawn four subagents in parallel (one message, four `Agent`
-calls), then merge their findings into one ranked list.
+Target: $ARGUMENTS
 
-Scope: the hook definitions in `.claude/settings.json`, `.claude/settings.local.json`, and any
-`hooks.json` a plugin contributes; the scripts those entries point at; and the project's written
-conventions (`CLAUDE.md` and anything it references).
+Audit a hook system end to end: the registrations, the scripts they point at, and the written rules
+the hooks are meant to enforce. This is a report; the caller applies the fixes.
 
-## Shared context
+## Step 1 — Resolve the target
 
-Every agent reads, before starting:
+- **A path:** audit the hook registrations and scripts under it.
+- **Empty:** collect every registration:
+  - the `hooks` blocks in `.claude/settings.json`, `.claude/settings.local.json`,
+    `~/.claude/settings.json` and any managed settings file;
+  - each plugin's `hooks/hooks.json`;
+  - `hooks:` in skill and agent frontmatter.
 
-- the settings hook block — which matcher runs which command, with which timeout;
-- every hook script and its shared helpers;
-- the project's written conventions, since many of them are candidates for enforcement;
-- the current hook documentation, so the audit is against the real event surface and not a
-  remembered one. Fetch it rather than recalling it.
+  Then read each script those entries run, the project's `CLAUDE.md`, and the files it references.
+- **Pasted hook config or scripts** (Cowork, or no checkout): audit that text and skip Step 2. This
+  fork can't see the conversation, so pasted content only arrives through the argument.
+- **No registrations found:** return `No hook registrations found under <target>` plus the paths you
+  checked, and stop.
 
-Tell each agent the same thing: report discrete findings, each with a file and line, a severity, and
-a concrete proposed change. No edits.
+Fetch `https://code.claude.com/docs/en/hooks` once here and pass the relevant parts to the lenses, so
+the audit tests against the current event surface. If the fetch fails, continue, and mark every
+Lens 4 finding `unverified against current docs`.
 
-## Run the mechanical checks first
+## Step 2 — Mechanical checks
 
-Three read-only scripts ship with this plugin, under `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/`. Run
-them before fanning out: they settle the mechanical questions deterministically, so the four lenses
-spend their budget on judgement instead of re-deriving what a script already knows. They only read;
-none of them edits anything.
-
-They need `jq`. If it is missing, say so and continue with the lenses — do not let the audit fail
-on a missing tool.
+Three scripts ship under `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/`. Run the first two before the lenses,
+and hand their output to the lenses as established fact:
 
 ```bash
-command -v jq >/dev/null 2>&1 || echo "jq missing — mechanical checks unavailable"
+# Registration: event names, matcher syntax, hook type, command shape, timeouts;
+# with --plugin-root, whether each registered command resolves to an existing file.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/validate-hook-registration.sh" <hooks.json> --plugin-root <plugin-dir>
 
-# 1. The registration. Walks hooks.json (wrapped or bare), checking event names, matcher
-#    literal-vs-regex, hook type, command shape and timeouts. With --plugin-root it also
-#    confirms every registered command resolves to a file that exists.
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/validate-hook-registration.sh" \
-  <path/to/hooks.json> --plugin-root <plugin-dir>
-
-# 2. The sources. Static checks on the hook scripts themselves — fields read but never
-#    obtained, machine-local paths, eval on hook input, missing CLI guards, blocks with no
-#    reason on stderr. Language-aware: shell-only rules are not applied to other runtimes.
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/lint-hook-source.sh" --dir <hooks/src-dir>
-
-# 3. One hook, actually executed. Builds a realistic stdin payload for the named event,
-#    exports CLAUDE_PLUGIN_ROOT / CLAUDE_PROJECT_DIR / CLAUDE_ENV_FILE, runs the hook under a
-#    timeout, and reports the exit code with stdout (the decision channel) and stderr (the
-#    feedback channel) kept apart. `--print-payload` shows the fixture without running anything.
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-hook-event.sh" \
-  --event PreToolUse --tool Bash -- <the hook command>
+# Sources: fields read but never supplied, machine-local paths, eval on hook input,
+# missing CLI guards, blocks with no stderr reason.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/lint-hook-source.sh" --dir <hook-source-dir>
 ```
 
-Each exits 0 when clean, 1 on findings, 2 when misconfigured. Feed their findings to the lenses as
-established fact and let the agents reason about what to do, not about whether it is true.
+Both only read, and exit `0` clean (warnings allowed), `1` errors found, `2` misconfigured. Exit `2`
+covers a missing `jq`. Record it as "mechanical checks unavailable" and continue with the lenses.
 
-Where this bites hardest: Lens 4 asks whether an entry points at a missing script and whether a
-timeout matches its workload — `validate-hook-registration.sh --plugin-root` answers the first
-mechanically. And the whole audit says "verify one deliberately rather than assuming";
-`run-hook-event.sh` is how that verification is actually performed. Use it on at least one hook per
-event the system registers, and quote the exit code in the finding.
+The third script, `run-hook-event.sh`, **executes** a hook against a synthetic payload for the named
+event:
 
-## Lens 1 — Cost inside hooks
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-hook-event.sh" --event PreToolUse --tool Bash --print-payload
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/run-hook-event.sh" --event PreToolUse --tool Bash -- <hook argv>
+```
 
-A hook that calls a model runs on every matching event, unattended, with nobody watching the bill.
+- `--print-payload` only prints the fixture.
+- Without it, the hook runs for real and can write files or send notifications. Run it only on
+  hooks whose source you have read and judged free of side effects. The call raises a permission
+  prompt, because it is deliberately left out of `allowed-tools`.
+- Its exit code describes the run, not the hook's verdict:
+  - `0`: the hook returned a protocol-defined code (0, 1 or 2, where 2 means it blocked);
+  - `1`: timeout, undefined code, or unparseable JSON;
+  - `2`: bad usage.
+- Quote the hook's own exit code and stderr in any finding based on a run.
 
-First determine whether any hook calls a model at all: grep the hook sources for an SDK import or
-an inference call. If none do, say so plainly and then check for *drift* — a leftover SDK
-dependency in the manifest, documentation describing model-calling behaviour that no longer exists,
-or a stale configuration key. Remove-the-reference findings are real findings.
+## Step 3 — Four lenses
 
-For each hook that does call a model:
+Spawn four `Agent` calls in one message, one lens each. Give every agent the Step 1 file list, the
+Step 2 output, the fetched docs, and the finding schema below. If `Agent` is unavailable (the nesting
+depth limit, or a surface without subagents), run the lenses inline in order.
 
-- which model, and is it pinned or inheriting a default?
-- what bounds the work — turn ceiling, prompt size cap?
-- what gates it — a minimum change threshold, a cooldown, a debounce?
-- what does it fire on? A hook matching every write will run on lockfiles, generated output,
-  and documentation. That is usually unintended.
-- a rough per-invocation cost.
+**Lens 1: model cost inside hooks.** Grep hook sources for SDK imports or inference calls, and for
+`prompt`/`agent` hook types. If none exist, check for drift: a leftover SDK dependency, docs
+describing model calls that no longer happen, a stale config key. For each hook that calls a model:
 
-Recommend: pin to the cheapest model that can do the job, cut the prompt to what the decision
-actually needs, and narrow the matcher before anything else.
+- Is the model pinned?
+- What bounds the prompt size?
+- What gates the call (threshold, cooldown)?
+- Does the matcher fire on lockfiles, generated output or docs?
+- What does one invocation roughly cost?
 
-## Lens 2 — Process and duplicated work
+Recommend narrowing the matcher first.
 
-Every hook entry on an event is a separate process start. Several handlers on the same event each
-pay interpreter startup, each re-resolve the repository root, and each re-read the same file from
-disk.
+**Lens 2: process and duplicated work.** Each handler on an event is a separate process. Mark
+identical entry work across handlers on the same event. Find one condition checked in two places
+with different outcomes (blocks in Pre, warns in Post). Weigh consolidating into a dispatcher against
+its change cost, and state which way it comes out.
 
-- Map what each handler does on entry, and mark the work that is identical across handlers firing
-  on the same event.
-- Look for the same condition checked in two places with two different outcomes — a check that
-  blocks in a pre-event handler and merely warns in the post-event one is one rule with two
-  surfaces and two behaviours.
-- Look for the same message emitted from two branches of one script.
-- Evaluate consolidation into a single dispatcher against its complexity cost, and say which way it
-  comes out. Consolidation is not automatically correct; a dispatcher that must know about every
-  check is harder to change than five small scripts.
+**Lens 3: written rules that should be mechanical.** This lens owns the rule-to-hook question for
+the whole plugin. Classify each written convention:
 
-Propose a concrete plan: which files merge, what shared helper is needed, and the expected
-reduction.
+- **(a) enforced:** a hook or permission rule already blocks or warns;
+- **(b) should be enforced:** violations are detectable from tool input;
+- **(c) judgement only.**
 
-## Lens 3 — Written rules that should be mechanical
+For each (b), sketch the event, matcher, detection condition, exit behaviour and the message the
+model reads.
 
-Read the project's conventions. Classify each rule:
+**Lens 4: staleness and drift.** Against the fetched docs, look for:
 
-- **(a) already enforced** — a hook or permission rule blocks or warns on it;
-- **(b) should be enforced** — it is violated in practice because it depends on the model
-  remembering it;
-- **(c) judgement only** — no mechanical signal can decide it.
+- uncovered lifecycle events that would help;
+- deprecated payload fields;
+- branches unreachable under the configured matchers;
+- entries pointing at a missing or always-exit-0 script;
+- external CLIs invoked with no guard;
+- timeouts mismatched to the workload;
+- assumptions that the working directory is the repo root, which break under worktrees.
 
-Prioritize category (b) by what actually goes wrong: destructive commands run without confirmation,
-verification steps skipped, generated files edited by hand, credentials pasted into tracked files,
-commit or branch conventions ignored, a prerequisite step bypassed.
+Finding schema, for every lens:
 
-For each (b) rule, sketch the hook: which event, which matcher, the exact condition to detect, the
-exit behaviour, and the message the model will read. A rule whose violation cannot be detected from
-the tool input is a (c), not a (b) — say so rather than proposing an unimplementable hook.
+```json
+{"lens": 1, "severity": "critical|warning|minor", "file": "path", "line": 0,
+ "evidence": "quoted code or rule", "problem": "one sentence", "change": "concrete proposal"}
+```
 
-## Lens 4 — Staleness and drift
+Severity is `critical` (blocks unrelated work, or fails open silently), `warning` (cost, duplication,
+an unenforced rule that is actually violated) or `minor`.
 
-Cross-reference the implementation against the current hook API.
+## Step 4 — Verify
 
-- Lifecycle events with no coverage that would help, and events being used where a cheaper one
-  would do.
-- Deprecated call shapes or outdated payload assumptions.
-- Dead branches — conditions that cannot be reached given the matchers actually configured.
-- Entries wired in settings that point at a missing script, or at a script that always exits zero
-  without doing anything.
-- External CLI dependencies invoked with no graceful path when the CLI is absent. A hook that
-  fails because a tool is not installed blocks work for a reason unrelated to the work.
-- Timeouts mismatched to the workload: too short produces silent failures that look like the hook
-  passing, too long blocks every edit.
-- Anything depending on the working directory being the repository root — that assumption breaks
-  under worktrees and subdirectory invocations.
+Re-open the file and line for every critical finding and confirm the quoted evidence is there. Drop
+any finding whose evidence you can't reproduce.
 
-Severity each finding: **critical** (blocks work or silently fails open), **warning**, **minor**.
+## Report
 
-## Synthesis
+Keep it under about 1,500 words.
 
-One ranked output, under about 1,500 words. Every item cites a file and line and quotes the relevant
-code or rule.
+```markdown
+# Hook audit: <target>
 
-### Highest-value changes (top five)
+Mechanical checks: registration exit <n>, source lint exit <n> (or "unavailable: <reason>")
 
-Cost, reliability, or maintainability, with the estimated impact.
+## Findings
+| # | Severity | Lens | File:line | Problem | Change |
+|---|----------|------|-----------|---------|--------|
 
-### Already correct (top five)
+## Already correct
+<up to five things done well, so they don't get "improved" later>
 
-Name what is well done so it does not get "improved" later.
+## Needs a decision
+<up to three genuine trade-offs: the options and their costs, not decided here>
 
-### Needs a decision (top three)
-
-Genuine trade-offs. Present the options and the cost of each. Do not pick.
+## Not checked
+<unreadable paths, skipped runs, unverified lens-4 items, or "none">
+```

@@ -1,7 +1,7 @@
 ---
 name: commit-standards
+description: "Use when writing a commit message or a changelog-feeding PR title, or checking whether one is well-formed. This team's Conventional Commits types, scope charset and release impact. Not for branch names (use issue-tracker-core:branch-and-title-conventions)."
 license: MIT
-description: Conventional Commits format, semver impact per type, and scope rules for commit subjects. Use whenever you are authoring a commit message, writing a PR title that feeds a changelog, or reviewing whether a commit message is well-formed.
 ---
 
 # Commit Standards
@@ -16,73 +16,81 @@ description: Conventional Commits format, semver impact per type, and scope rule
 <footer>
 ```
 
-- **Subject** — imperative mood ("add", not "added"/"adds"), no trailing period,
-  under ~72 characters, lowercase after the colon.
-- **Body** — optional. Explain *why*, not *what*; the diff already shows what.
-  Wrap at ~72 columns, blank line after the subject.
-- **Footer** — optional. Breaking-change notices, issue references, trailers.
+- **Header**: a lowercase type from the table below, an optional scope in parentheses, an
+  optional `!` immediately before the colon, then a colon, one space and the subject.
+- **Scope**: the team charset is letters, digits, `_`, `/` and `-` (`api`, `PROJ-123`,
+  `web/auth`). The `dev-guardrails` commit hook enforces it and rejects anything else, such as dots
+  or spaces. A repo's `conventional-pre-commit` hook accepts a wider set by default; the team
+  charset still applies.
+- **Subject**: imperative mood ("add", not "added"), lowercase first word, no trailing period,
+  header under about 72 characters.
+- **Body** (optional): explain why, not what; the diff already shows what. Blank line after the
+  header, wrap at about 72 columns.
+- **Footer** (optional): `BREAKING CHANGE: …` (uppercase), `Refs: …`, and trailers.
 
-## Types and semver impact
+## Types and release impact
 
-| Type | Semver | Example |
+| Type | Use for | Release impact |
 | --- | --- | --- |
-| `feat` | **MINOR** | `feat(auth): add OAuth2 login` |
-| `fix` | PATCH | `fix(api): handle null response` |
-| `docs` | PATCH | `docs(readme): update install instructions` |
-| `refactor` | PATCH | `refactor(utils): simplify date parsing` |
-| `perf` | PATCH | `perf(query): add index for user lookup` |
-| `test` | PATCH | `test(auth): cover login edge cases` |
-| `ci` | PATCH | `ci: run typecheck on pull requests` |
-| `build` | PATCH | `build: update bundler config` |
-| `chore` | PATCH | `chore: update dependencies` |
-| `style` | PATCH | `style(ui): fix button alignment` |
-| `revert` | PATCH | `revert: revert "feat(auth): add OAuth2 login"` |
+| `feat` | A new capability | MINOR |
+| `fix` | A bug fix | PATCH |
+| `perf` | A performance improvement | none by default |
+| `refactor` | Restructuring with no behaviour change | none by default |
+| `docs` | Documentation only | none by default |
+| `test` | Adding or fixing tests | none by default |
+| `build` | Build system or packaging config | none by default |
+| `ci` | CI configuration | none by default |
+| `chore` | Dependency bumps and housekeeping that fits no other type | none by default |
+| `style` | Formatting only: whitespace, semicolons, formatter runs | none by default |
+| `revert` | Reverting an earlier commit | as the reverted change |
 
-A breaking change is marked either with `!` after the scope or with a
-`BREAKING CHANGE:` footer, and is **MAJOR** regardless of type.
+A `!` before the colon or a `BREAKING CHANGE:` footer makes any type MAJOR. "None by default"
+follows the Conventional Commits spec; a repo whose release tool bumps PATCH for other types
+says so in its own config, and that config wins.
 
-## Scope convention
+## Scope
 
-- On an issue-tracked branch, use the issue ID: `feat(PROJ-123): add search filter`.
-- With no tracker context, use the component or package: `fix(api): handle null response`.
-- Omit the scope when the change is repo-wide: `chore: update dependencies`.
+- On an issue-tracked branch, the scope is the issue key: `feat(PROJ-123): add search filter`.
+  The key shape comes from `CLAUDE_TICKET_PATTERN` (default `[A-Z][A-Z0-9]+-[0-9]+`).
+- With no tracker, use the component or package: `fix(api): handle null response`.
+- Omit the scope for repo-wide changes: `chore: update dependencies`.
 
-Pick one scope vocabulary per repo and stay in it. Mixing issue IDs and component
-names arbitrarily makes the history unfilterable.
+Use one scope vocabulary per repo so history stays filterable.
 
 ## Examples
 
-Feature on an issue-tracked branch:
-
-```
-feat(PROJ-123): add search filter for the user list
-```
-
-Bug fix scoped to a component, with a reason in the body:
-
-```
-fix(api): handle null user response gracefully
+<example>
+fix(api): handle null user response
 
 The upstream directory returns 204 with an empty body for suspended
 accounts; we were dereferencing the parsed payload unconditionally.
-```
+</example>
 
-Breaking change:
-
-```
+<example>
 feat(api)!: remove deprecated v1 endpoints
 
 BREAKING CHANGE: /api/v1/* is removed. Migrate callers to /api/v2/*.
-```
+</example>
+
+<example>
+revert: feat(PROJ-123): add search filter
+
+Refs: 676104e
+</example>
+
+Subjects git writes itself (`Merge …`, `Revert "…"`, `fixup! …`, `squash! …`, `amend! …`) are
+accepted as they are.
 
 ## Attribution
 
-If the project requires a co-author trailer for assistant-written commits, add it in
-the footer in the form the project specifies, and apply it consistently. Check
-`CONTRIBUTING.md` or the repo's agent instructions rather than assuming.
+If the project requires a co-author trailer for assistant-written commits, put it in the footer in
+the form the project's `CONTRIBUTING.md` or agent instructions specify.
 
-## Enforcement
+## Verify
 
-Most repos enforce this with a `commit-msg` hook (for example `commitlint` or
-`conventional-pre-commit`). If the repo has one, run it locally before pushing —
-a rejected message after a long rebase is expensive to fix.
+Take the first non-blank line of the message. If it matches
+`^(Merge |Revert "|(fixup|squash|amend)! )`, git wrote it; accept it. Otherwise check it against
+`^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([A-Za-z0-9_/-]+\))?!?: .+`
+(the same types and scope charset the `dev-guardrails` hook uses). If the repo also has a
+`commit-msg` hook (`commitlint`, `conventional-pre-commit`), run it locally too, because a rejected
+message after a long rebase is expensive. Without a checkout, check a pasted message the same way.

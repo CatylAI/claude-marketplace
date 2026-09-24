@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CatylAI/claude-marketplace/schemas/validator-decisions.schema.json",
+  "title": "Validator decisions",
+  "description": "The .code-review/VALIDATOR-DECISIONS.json file review-validator writes. GENERATED from contract.py by decisions_schema(); do not hand-edit. Regenerate with python3 pipeline/contract.py schema --write.",
+  "type": "object",
+  "required": [
+    "agent",
+    "decisions"
+  ],
+  "properties": {
+    "agent": {
+      "const": "review-validator"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source",
+          "source_id",
+          "action"
+        ],
+        "properties": {
+          "source": {
+            "enum": [
+              "SCAN",
+              "SEMANTIC",
+              "TESTING",
+              "ARCHITECTURE",
+              "CLAUDE_CONFIG"
+            ]
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "enum": [
+              "keep",
+              "reject",
+              "merge"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "INVALID_LOCATION",
+              "ALREADY_ADDRESSED",
+              "FALSE_POSITIVE",
+              "TRIAGE_DROP"
+            ]
+          },
+          "merged_into": {
+            "type": "string",
+            "minLength": 1
+          },
+          "detail": {
+            "type": "string"
+          },
+          "finding": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "enum": [
+                  "BLOCKER",
+                  "MAJOR",
+                  "MINOR",
+                  "NIT"
+                ]
+              },
+              "category": {
+                "type": "string",
+                "minLength": 1
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "recommendation": {
+                "type": "string"
+              },
+              "ux_impact": {
+                "type": "boolean"
+              },
+              "in_diff": {
+                "type": "boolean"
+              },
+              "confidence": {
+                "enum": [
+                  "HIGH",
+                  "MEDIUM",
+                  "LOW"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "reject"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reason"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "merge"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "merged_into"
+              ]
+            }
+          }
+        ],
+        "additionalProperties": true
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "positive_observations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

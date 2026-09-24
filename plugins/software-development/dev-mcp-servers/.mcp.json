@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.82"],
+      "env": {
+        "PLAYWRIGHT_MCP_HEADLESS": "${PLAYWRIGHT_MCP_HEADLESS:-true}",
+        "PLAYWRIGHT_MCP_ISOLATED": "${PLAYWRIGHT_MCP_ISOLATED:-true}"
+      }
+    }
+  }
+}

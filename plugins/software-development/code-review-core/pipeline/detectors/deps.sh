@@ -18,9 +18,10 @@
 # someone else's repository; whoever holds write access there can move it at any time, and your next
 # run then executes code you never reviewed, in a job that holds your secrets. That rule is stated
 # in `github-workflow/skills/actions-authoring` ("Pin third-party actions to a full commit SHA"),
-# and this detector is written to agree with it clause for clause, including its two documented
-# exemptions: a local action referenced by path, and a reusable workflow, which that skill pins "to
-# a tag or SHA". Two parts of the repo disagreeing about one rule is worse than neither existing.
+# and this detector is written to agree with it clause for clause, including its one documented
+# exemption: a local action referenced by path. A remote reusable workflow is pinned to a SHA like any
+# action, because its tag is just as movable. Two parts of the repo disagreeing about one rule is
+# worse than neither existing.
 #
 # SEVERITY IS NOT UNIFORM, on purpose. A detector whose findings are all one tier gets muted
 # wholesale. The ladder used here, against `code-review-standards`:
@@ -111,8 +112,10 @@ findings, notes = [], []
 def add(path, line, rule, sev, category, title, rec):
     findings.append({
         "path": path, "line": int(line) if line else 1, "rule": rule,
-        "severity": sev, "category": category, "title": title[:300],
-        "recommendation": rec[:600],
+        # Not truncated here: normalize.py's mk() is the one place that caps title and
+        # recommendation length (TITLE_MAX / RECOMMENDATION_MAX), so the caps cannot drift.
+        "severity": sev, "category": category, "title": title,
+        "recommendation": rec,
     })
 
 
@@ -155,11 +158,6 @@ def scan_workflow(path, lines, budget):
         name, sep, ref = ref_str.rpartition("@")
         if not sep:
             name, ref = ref_str, ""
-        # Exemption 2: actions-authoring pins a reusable-workflow caller "to a tag or SHA of the
-        # reusable workflow", which is a weaker bar than it sets for an action, and this detector
-        # follows the document rather than overruling it.
-        if "/.github/workflows/" in name:
-            continue
         if SHA40.match(ref):
             continue
         if n >= budget:
@@ -171,8 +169,12 @@ def scan_workflow(path, lines, budget):
             "A tag is a pointer in someone else's repository and can be moved to any commit by "
             "anyone with write access there, so the next run executes code nobody reviewed — with "
             "this job's secrets. Resolve the SHA for the version you reviewed "
-            f"(`gh api repos/{name}/git/ref/tags/{ref or 'vX.Y.Z'} --jq '.object.sha'`) and pin to "
-            "it with the version in a trailing comment. See the `actions-authoring` skill.")
+            # commits/<tag> dereferences an annotated tag to its commit; git/ref/tags would return
+            # the tag object's SHA, which is not what `uses:` must pin. Only owner/repo goes in the
+            # API path, even for a sub-path action or a reusable workflow file.
+            f"(`gh api repos/{'/'.join(name.split('/')[:2])}/commits/{ref or 'vX.Y.Z'} --jq .sha`) and "
+            "pin to it with the version in a trailing comment. See the "
+            "`github-workflow:actions-authoring` skill.")
     return n
 
 

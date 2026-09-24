@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "PreToolUse hook engine for the dev-guardrails plugin. Runs directly from TypeScript via node --experimental-strip-types; no build step.",
+  "description": "Hook engine for the dev-guardrails plugin: PreToolUse gates plus non-blocking lifecycle and PostToolUse reports. Runs directly from TypeScript with Node's type stripping; no build step and no runtime dependencies.",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.6"
   },
   "scripts": {
     "check": "tsc --noEmit",

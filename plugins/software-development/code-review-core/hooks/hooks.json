@@ -1,0 +1,17 @@
+{
+  "description": "Limits code-review-core judge agents to writing under .code-review/. Other sessions and agents are unaffected.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-review-writes.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

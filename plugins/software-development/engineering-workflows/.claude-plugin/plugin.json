@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "engineering-workflows",
-  "version": "0.1.0",
-  "description": "Engineering workflows: architecture decision records, code review checklists, release notes and design docs.",
+  "version": "0.2.1",
+  "description": "Everyday engineering workflows: root-cause debugging with a read-only debugger agent, design intake and implementation plans, multi-worktree release trains, repository walkthroughs and session handoffs.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"
@@ -12,8 +12,9 @@
   "license": "MIT",
   "keywords": [
     "engineering",
-    "adr",
-    "code-review",
-    "typescript"
+    "debugging",
+    "design",
+    "planning",
+    "worktrees"
   ]
 }

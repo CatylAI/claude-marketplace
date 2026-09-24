@@ -12,6 +12,8 @@
 # pass.
 
 set -uo pipefail
+# No __pycache__ left in the plugin tree: the suites import normalize/contract/testpaths in place.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCAN="$SELF_DIR/review-scan.sh"
@@ -68,8 +70,16 @@ print($2)" "$1" 2>/dev/null
 printf 'review-scan tests (shell: %s)\n' "${ZSH_VERSION:+zsh}${BASH_VERSION:+bash $BASH_VERSION}"
 
 # ============================================================== argument handling
-t="--base is required"
-if ! "$SCAN" >/dev/null 2>&1; then pass "$t"; else fail "$t" "exited 0 with no --base"; fi
+# --base is OPTIONAL now (origin/HEAD -> origin/main -> origin/master). This case used to run the
+# scanner with no --base from the suite's own cwd, which after the fallback would have scanned THIS
+# repository and written .code-review into it. It now runs in a throwaway repo with no remote refs.
+t="no --base and no origin refs: exits 2 and names every ref it tried"
+d="$(mkrepo nobase)"
+git -C "$d" update-ref -d refs/remotes/origin/main
+( cd "$d" && "$SCAN" --out "$d/o" >/dev/null 2>"$d/.err" ); rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'origin/HEAD' "$d/.err" && grep -q 'origin/main' "$d/.err" \
+   && grep -q 'origin/master' "$d/.err" && grep -q -- '--base main' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc stderr: $(head -c 300 "$d/.err")"; fi
 
 t="unresolvable base ref exits non-zero"
 d="$(mkrepo badbase)"
@@ -597,7 +607,7 @@ recount_dir="$TMP/recount"; mkdir -p "$recount_dir"
 python3 - "$SCAN" "$recount_dir/recount.py" <<'PYX'
 import re, sys
 src = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-m = re.search(r"^python3 - \"\$OUT/SCAN\.json\" \"\$SCOPED\" \"\$SELF_DIR\" <<'PY'\n(.*?)\n^PY$",
+m = re.search(r"^python3 - \"\$OUT/SCAN\.json\" \"\$SCOPED\" \"\$SELF_DIR\"[^\n]*<<'PY'\n(.*?)\n^PY$",
               src, re.M | re.S)
 if not m:
     sys.stderr.write("could not locate the recount heredoc in review-scan.sh\n")
@@ -1477,6 +1487,270 @@ print(repr(nz.canon_severity('SEVERE')), nz.canon_severity('INFO'),
 " "$SELF_DIR/normalize.py")"
 if [ "$n_unknown" = "'' NIT APPROVE" ]; then pass "$t"
 else fail "$t" "canon_severity/rollup mishandled an unrankable severity: $n_unknown"; fi
+
+# ============================================================== regressions: review of the pipeline
+# Each case below failed against the code before its fix and passes after it.
+
+# run_bounded <seconds> <cmd...> — run a command, killing it if it outlives <seconds>. rc 124 on
+# timeout. Portable: no `timeout` binary on stock macOS.
+run_bounded() {
+  local secs="$1" pid i=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge $((secs * 10)) ]; then
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wait "$pid"
+}
+
+d="$(mkrepo argloop)"
+for args in "--base" "--base origin/main --out" "--base --out x"; do
+  t="'review-scan.sh $args' exits 2 instead of hanging"
+  # shellcheck disable=SC2086  # word-splitting $args into separate flags is the point
+  ( cd "$d" && run_bounded 10 "$SCAN" $args ) >/dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 2 ]; then pass "$t"; else fail "$t" "rc=$rc (124 = hung)"; fi
+done
+
+t="--max-findings is validated before any detector runs"
+d="$(mkrepo badmax)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+( cd "$d" && "$SCAN" --base origin/main --out "$d/.code-review" --max-findings abc ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 2 ] && [ ! -d "$d/.code-review/raw" ] && grep -q 'positive integer' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc raw/ exists: $([ -d "$d/.code-review/raw" ] && echo yes || echo no)"; fi
+
+t="--detectors refuses a name that is not bare lowercase letters (no path traversal)"
+( cd "$d" && "$SCAN" --base origin/main --out "$d/.code-review" --detectors 'python,../../x' ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'not a detector name' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc: $(head -c 200 "$d/.err")"; fi
+
+t="no --base: falls back to origin/master when that is the only remote ref"
+d="$(mkrepo onlymaster)"
+git -C "$d" update-ref refs/remotes/origin/master refs/remotes/origin/main
+git -C "$d" update-ref -d refs/remotes/origin/main
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+( cd "$d" && "$SCAN" --out "$d/.code-review" --detectors impact ) >/dev/null 2>&1; rc=$?
+tb="$(jq_get "$d/.code-review/SCAN.json" "d['target_branch']")"
+if [ "$rc" -eq 0 ] && [ "$tb" = "origin/master" ]; then pass "$t"
+else fail "$t" "rc=$rc target_branch=$tb"; fi
+
+t="no --base: origin/HEAD wins and is reported as the branch it points at"
+git -C "$d" update-ref refs/remotes/origin/trunk refs/remotes/origin/master
+git -C "$d" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+( cd "$d" && "$SCAN" --out "$d/.code-review" --detectors impact ) >/dev/null 2>&1; rc=$?
+tb="$(jq_get "$d/.code-review/SCAN.json" "d['target_branch']")"
+if [ "$rc" -eq 0 ] && [ "$tb" = "origin/trunk" ]; then pass "$t"
+else fail "$t" "rc=$rc target_branch=$tb"; fi
+
+t="an explicit --base that does not resolve is refused, never substituted"
+( cd "$d" && "$SCAN" --base origin/nope --out "$d/.code-review" ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q "origin/nope" "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc"; fi
+
+t="a non-ASCII filename is scanned, not silently dropped by git's C-quoting"
+d="$(mkrepo unicode)"
+printf 'def f():\n    # TODO: handle the retry case\n    return 1\n' > "$d/café.py"
+commit_branch "$d"
+run_scan "$d" --detectors comments >/dev/null
+hit="$(jq_get "$d/.code-review/SCAN.json" "sum(1 for f in d['findings'] if f['location'].startswith('café.py:'))")"
+if [ "${hit:-0}" -ge 1 ]; then pass "$t"
+else fail "$t" "no finding on café.py: $(jq_get "$d/.code-review/SCAN.json" "[f['location'] for f in d['findings']]")"; fi
+
+t="a filename containing a newline is recorded as a coverage gap, not dropped silently"
+d="$(mkrepo newline)"
+printf 'x = 1\n' > "$d/bad
+name.py"
+commit_branch "$d"
+run_scan "$d" --detectors impact >/dev/null
+gap="$(jq_get "$d/.code-review/SCAN.json" "[s['tool'] for s in d['scan_meta']['tools_skipped']]")"
+case "$gap" in *changed-files*) pass "$t" ;; *) fail "$t" "tools_skipped=$gap" ;; esac
+
+t="the generated-file filter is anchored: src/prebuild/ and myvendor/ are real source"
+d="$(mkrepo anchored)"
+mkdir -p "$d/src/prebuild" "$d/myvendor" "$d/build"
+printf 'x = 1\n' > "$d/src/prebuild/gen.py"
+printf 'y = 1\n' > "$d/myvendor/lib.py"
+printf 'z = 1\n' > "$d/build/out.py"
+printf 'lock\n' > "$d/Cargo.lock"
+commit_branch "$d"
+run_scan "$d" --detectors impact >/dev/null
+if grep -q '2 changed file(s) to scan (2 generated/excluded)' "$d/.stderr"; then pass "$t"
+else fail "$t" "$(grep 'changed file' "$d/.stderr")"; fi
+
+t="a stale SCAN-CONTRACT-DEFECTS.md from an earlier run is removed on a clean run"
+d="$(mkrepo stalebanner)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+mkdir -p "$d/.code-review"; printf 'stale\n' > "$d/.code-review/SCAN-CONTRACT-DEFECTS.md"
+run_scan "$d" --detectors impact >/dev/null
+if [ ! -e "$d/.code-review/SCAN-CONTRACT-DEFECTS.md" ]; then pass "$t"
+else fail "$t" "stale banner survived a clean run"; fi
+
+t="the scratch changed-file list raw/.changed is not left behind"
+if [ ! -e "$d/.code-review/raw/.changed" ]; then pass "$t"
+else fail "$t" "raw/.changed left behind"; fi
+
+t="a summary that cannot be written fails the run (exit 2), not a silent exit 0"
+rm -f "$d/.code-review/SCAN-SUMMARY.md"
+mkdir -p "$d/.code-review/SCAN-SUMMARY.md"      # a directory where the file must go
+( cd "$d" && "$SCAN" --base origin/main --out "$d/.code-review" --detectors impact ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'SCAN-SUMMARY.md' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc"; fi
+
+t="scanning a ref that is not checked out says so in scan_meta"
+d="$(mkrepo wtmismatch)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+src_sha="$(git -C "$d" rev-parse HEAD)"
+git -C "$d" checkout --quiet main
+( cd "$d" && "$SCAN" --base origin/main --source "$src_sha" --out "$d/.code-review" --detectors impact ) >/dev/null 2>&1
+m="$(jq_get "$d/.code-review/SCAN.json" "(d['scan_meta'].get('worktree_matches_source'), any('WORKTREE MISMATCH' in n for n in d['scan_meta']['notes']))")"
+if [ "$m" = "(False, True)" ]; then pass "$t"; else fail "$t" "got $m"; fi
+
+t="uncommitted edits to a changed file are named in scan_meta"
+git -C "$d" checkout --quiet feature
+printf 'x = 2\n' > "$d/a.py"
+run_scan "$d" --detectors impact >/dev/null
+m="$(jq_get "$d/.code-review/SCAN.json" "any('uncommitted' in n and 'a.py' in n for n in d['scan_meta']['notes'])")"
+if [ "$m" = "True" ]; then pass "$t"; else fail "$t" "notes: $(jq_get "$d/.code-review/SCAN.json" "d['scan_meta']['notes']")"; fi
+
+# --- the hunk filter, directly
+FILTER_PY="$SELF_DIR/filter-carried-findings.py"
+d="$(mkrepo hunks)"
+seq 1 120 > "$d/a.txt"
+printf 'def helper_func():\n    pass\n\ndef keep():\n    return 1\n' > "$d/m.py"
+git -C "$d" add -A; git -C "$d" commit --quiet -m base
+git -C "$d" update-ref refs/remotes/origin/main HEAD
+awk 'NR==90{print "CHANGED"; next} {print}' "$d/a.txt" > "$d/a.tmp" && mv "$d/a.tmp" "$d/a.txt"
+printf 'def keep():\n    return 1\n' > "$d/m.py"       # pure deletion of lines 1-3
+commit_branch "$d"
+cat > "$d/in.json" <<'JSON'
+{"findings": [
+  {"id": "RANGE", "location": "a.txt:80-100"},
+  {"id": "RANGE-EN", "location": "a.txt:80–100"},
+  {"id": "OUTSIDE", "location": "a.txt:10-20"},
+  {"id": "POINT", "location": "a.txt:90"},
+  {"id": "DELETED-AT-TOP", "location": "m.py:1"},
+  {"id": "UNCHANGED-LINE", "location": "m.py:2"}
+]}
+JSON
+( cd "$d" && python3 "$FILTER_PY" --in in.json --out out.json --target origin/main --source HEAD ) >/dev/null 2>&1
+kept="$(jq_get "$d/out.json" "','.join(f['id'] for f in d['findings'])")"
+t="a cited range is an interval: 80-100 is kept when only line 90 changed"
+case ",$kept," in *,RANGE,*RANGE-EN,*) pass "$t" ;; *) fail "$t" "kept=$kept" ;; esac
+t="a range entirely outside every hunk is still dropped"
+case ",$kept," in *,OUTSIDE,*) fail "$t" "kept=$kept" ;; *) pass "$t" ;; esac
+t="a pure-deletion hunk keeps a finding anchored at its boundary line"
+case ",$kept," in *,DELETED-AT-TOP,*) pass "$t" ;; *) fail "$t" "kept=$kept" ;; esac
+t="the deletion boundary rule does not widen to the next, unchanged line"
+case ",$kept," in *,UNCHANGED-LINE,*) fail "$t" "kept=$kept" ;; *) pass "$t" ;; esac
+
+t="the filter exits 3 with a message on unparseable input (was a traceback)"
+printf '{not json' > "$d/bad.json"
+( cd "$d" && python3 "$FILTER_PY" --in bad.json --out o.json --target origin/main --source HEAD ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 3 ] && grep -q 'not valid JSON' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc"; fi
+
+t="end to end: a removed symbol that still has consumers survives diff-scoping"
+d="$(mkrepo impactdel)"
+printf 'def helper_func():\n    pass\n\ndef keep():\n    helper_func()\n' > "$d/m.py"
+printf 'from m import helper_func\n' > "$d/use.py"
+git -C "$d" add -A; git -C "$d" commit --quiet -m base
+git -C "$d" update-ref refs/remotes/origin/main HEAD
+printf 'def keep():\n    pass\n' > "$d/m.py"
+commit_branch "$d"
+run_scan "$d" --detectors impact >/dev/null
+n="$(jq_get "$d/.code-review/SCAN.json" "sum(1 for f in d['findings'] if f['tool']=='impact' and 'helper_func' in f['title'])")"
+if [ "${n:-0}" -eq 1 ]; then pass "$t"
+else fail "$t" "impact findings in SCAN.json: $n (raw: $(jq_get "$d/.code-review/SCAN.raw.json" "[f['location'] for f in d['findings']]"))"; fi
+
+# --- secrets.sh: a crashing tool is a failure, not a clean result
+FAKE="$TMP/fakebin"; mkdir -p "$FAKE"
+printf '#!/bin/sh\necho "fatal: rule set unavailable" >&2\nexit 1\n' > "$FAKE/gitleaks"
+cp "$FAKE/gitleaks" "$FAKE/trivy"
+chmod +x "$FAKE/gitleaks" "$FAKE/trivy"
+d="$(mkrepo secretsfail)"
+printf 'x = 1\n' > "$d/a.py"; printf 'y = 1\n' > "$d/b.py"; commit_branch "$d"
+printf 'a.py\nb.py\n' > "$d/list"
+( cd "$d" && PATH="$FAKE:$PATH" bash "$SELF_DIR/detectors/secrets.sh" "$d/list" "$d/so" ) >/dev/null 2>&1
+t="gitleaks and trivy failing on every file are skips with their stderr, and write no raw JSON"
+if [ -f "$d/so/raw/gitleaks.skipped" ] && [ -f "$d/so/raw/trivy.skipped" ] \
+   && [ ! -e "$d/so/raw/gitleaks.json" ] && [ ! -e "$d/so/raw/trivy.json" ] \
+   && grep -q 'rule set unavailable' "$d/so/raw/gitleaks.skipped"; then pass "$t"
+else fail "$t" "raw/: $(ls -A "$d/so/raw" | tr '\n' ' ')"; fi
+
+t="gitleaks failing on SOME files keeps the rest's findings and names the unscanned files"
+cat > "$FAKE/gitleaks" <<'SH'
+#!/bin/sh
+# Fails on b.py, reports one finding on anything else.
+case "$2" in *b.py) echo "fatal: cannot read" >&2; exit 1 ;; esac
+while [ $# -gt 0 ]; do [ "$1" = "--report-path" ] && rpt="$2"; shift; done
+printf '[{"RuleID":"generic-api-key","Description":"d","StartLine":1,"EndLine":1,"File":"a.py"}]' > "$rpt"
+SH
+rm -rf "$d/so"
+( cd "$d" && PATH="$FAKE:$PATH" bash "$SELF_DIR/detectors/secrets.sh" "$d/list" "$d/so" ) >/dev/null 2>&1
+n="$(jq_get "$d/so/raw/gitleaks.json" "len(d)")"
+if [ "${n:-0}" -eq 1 ] && grep -q 'b.py' "$d/so/raw/gitleaks-partial.skipped" 2>/dev/null; then pass "$t"
+else fail "$t" "findings=$n raw/: $(ls -A "$d/so/raw" | tr '\n' ' ')"; fi
+
+t="normalize uses testpaths.py: B101 in e2e/, spec/ and conftest.py is suppressed, in src/ it is not"
+r="$(python3 -c "
+import sys, importlib.util
+spec=importlib.util.spec_from_file_location('nz', sys.argv[1])
+nz=importlib.util.module_from_spec(spec); spec.loader.exec_module(nz)
+fs=[{'_tool':'bandit','_rule':'B101','_path':p} for p in ('e2e/helpers.py','spec/x.py','conftest.py','src/app.py')]
+kept,_=nz.suppress(fs)
+print(','.join(f['_path'] for f in kept))
+" "$SELF_DIR/normalize.py")"
+if [ "$r" = "src/app.py" ]; then pass "$t"; else fail "$t" "kept=$r"; fi
+
+# --- second review round: each case failed before its fix
+t="a tool's stderr cut mid UTF-8 character does not crash normalize and fail the scan"
+# excerpt() keeps 200 BYTES; 199 ASCII bytes then `é` puts the cut inside the character, and
+# normalize.py's strict decode of the .skipped reason then killed the whole scan with exit 2.
+cat > "$FAKE/gitleaks" <<'SH'
+#!/bin/sh
+printf '%0199d' 0 | tr 0 x >&2
+printf '\303\251 after the cut\n' >&2
+exit 1
+SH
+d="$(mkrepo utf8cut)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+( cd "$d" && PATH="$FAKE:$PATH" "$SCAN" --base origin/main --out "$d/.code-review" --detectors secrets ) \
+  >/dev/null 2>"$d/.err"; rc=$?
+g="$(jq_get "$d/.code-review/SCAN.json" "[s['tool'] for s in d['scan_meta']['tools_skipped']]")"
+case "$rc:$g" in 0:*gitleaks*) pass "$t" ;; *) fail "$t" "rc=$rc skipped=$g $(tail -c 200 "$d/.err")" ;; esac
+
+t="--detectors with only separators is refused, not a scan that ran nothing and approved"
+bad=""
+for only in "," " " ",,"; do
+  ( cd "$d" && "$SCAN" --base origin/main --out "$d/.code-review" --detectors "$only" ) >/dev/null 2>"$d/.err"; rc=$?
+  { [ "$rc" -eq 2 ] && grep -q 'no detector names' "$d/.err"; } || bad="$bad '$only'(rc=$rc)"
+done
+if [ -z "$bad" ]; then pass "$t"; else fail "$t" "accepted:$bad"; fi
+
+t="deleting a whole file still runs impact and reports the consumers it broke"
+d="$(mkrepo delfile)"
+printf 'def helper_func():\n    return 1\n' > "$d/lib.py"
+printf 'from lib import helper_func\nprint(helper_func())\n' > "$d/main.py"
+commit_branch "$d"
+git -C "$d" update-ref refs/remotes/origin/main HEAD
+git -C "$d" rm --quiet lib.py; commit_branch "$d"
+run_scan "$d" >/dev/null
+n="$(jq_get "$d/.code-review/SCAN.json" "sum(1 for f in d['findings'] if f['tool']=='impact' and f['location']=='lib.py:1' and 'helper_func' in f['title'])")"
+if [ "${n:-0}" -eq 1 ]; then pass "$t"
+else fail "$t" "impact findings: $n; stderr: $(grep -E 'changed file|impact' "$d/.stderr" | tr '\n' ' ')"; fi
+
+t="a scan that dies part-way leaves no scratch lists in raw/"
+d="$(mkrepo dieclean)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+mkdir -p "$d/.code-review/SCAN-SUMMARY.md"      # makes the summary step die
+( cd "$d" && "$SCAN" --base origin/main --out "$d/.code-review" --detectors impact ) >/dev/null 2>&1; rc=$?
+left="$(ls -A "$d/.code-review/raw" | grep -E '^\.(changed|deleted|filter)' | tr '\n' ' ')"
+if [ "$rc" -eq 2 ] && [ -z "$left" ]; then pass "$t"; else fail "$t" "rc=$rc left: $left"; fi
 
 # ============================================================== summary
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"

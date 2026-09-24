@@ -42,9 +42,24 @@ actually contains.
 - Optional but useful: `gh` for release metadata, `jq` for reading manifests, and network access for
   registry queries and end-of-life lookups.
 
+## Why it works in this order
+
+- **The deployment ceiling comes before the latest version.** A function runtime, a managed cluster,
+  a pinned Terraform workspace or a lagging base image caps how far a runtime can move. Every
+  recommendation is the highest version that satisfies both upstream support and that ceiling, and
+  names which of the two bound it.
+- **Test adequacy is a gate at the start.** A suite that is already red, or that would not notice the
+  upgraded dependency misbehaving, cannot validate an upgrade. The plan says so before anything
+  moves, and you choose whether to proceed.
+- **Support status sets priority, not version distance.** Out of support now, then out of support
+  soon, then a known advisory, then feature-blocked, then merely behind.
+- **One change per commit.** A batch that breaks cannot be bisected; a single step names its own
+  cause.
+
 ## The pipeline
 
-Four skills, run in order. Each consumes the previous one's table.
+Four skills, run in order. Each consumes the previous one's table; `upgrade-plan` also reads the
+inventory table for the manifest, lockfile and pin columns that research does not carry.
 
 | Skill | Produces | What it is actually for |
 | --- | --- | --- |
@@ -57,6 +72,12 @@ You can run any stage on its own — `dependency-inventory` answers "what do we 
 committing to an upgrade, and `upgrade-research` answers "are we on a supported runtime" without
 changing anything. Running `upgrade-plan` without the two before it produces a plan built on
 guesses about what the latest version is.
+
+## Working state
+
+`upgrade-plan` and `upgrade-execute` keep their state in `.upgrade/` at the repository root: the
+plan, the baseline, per-step results and the start commit. The directory contains a `.gitignore`
+of `*`, so it never shows up in `git status` or in a commit. Delete it when the upgrade is done.
 
 ## Install
 
@@ -72,42 +93,40 @@ claude.ai account and Claude Code loads it automatically as a synced plugin.
 
 ## Surfaces
 
-Everything here is a skill, and skills load on both Claude Code and Cowork. What differs is whether
-they can do anything.
-
-| Name | Type | Available |
-|------|------|-----------|
-| `dependency-inventory` | Skill | readable on both; runs in Claude Code only |
-| `upgrade-research` | Skill | readable on both; runs in Claude Code only |
-| `upgrade-plan` | Skill | readable on both; runs in Claude Code only |
-| `upgrade-execute` | Skill | readable on both; runs in Claude Code only |
-
-**Execution requires Claude Code.** Every skill in this plugin reads a checkout, runs registry and
-package-manager commands, and runs a test suite; Cowork has no shell and no checkout, so the
-*procedures* are readable there — useful as a reference for how to do an upgrade — while carrying
-one out needs Claude Code. A skill that cannot reach a shell says so and asks for the output rather
-than answering from the manifest alone.
+Every skill here reads a checkout and runs package-manager, registry and test commands, so the
+skills need a shell: Claude Code in the terminal, desktop app, IDE, or a Claude Code web session.
+In Cowork there is no checkout; the skills say so and work from manifests, lockfiles and command
+output you paste in, and `upgrade-execute` does not run there at all.
 
 ## Layout
 
 ```
 dependency-upgrades/
 ├── .claude-plugin/plugin.json          # manifest (name, version, description, dependencies)
-├── SKILL.md                            # plugin thesis and pipeline; not user-invocable
-├── skills/dependency-inventory/SKILL.md
-├── skills/upgrade-research/SKILL.md
-├── skills/upgrade-plan/SKILL.md
-├── skills/upgrade-execute/SKILL.md
+├── skills/dependency-inventory/
+│   ├── SKILL.md
+│   └── references/ecosystems.md        # where each ecosystem declares and resolves versions
+├── skills/upgrade-research/
+│   ├── SKILL.md
+│   └── references/registries.md        # registry, EOL and advisory sources
+├── skills/upgrade-plan/
+│   ├── SKILL.md
+│   └── references/
+│       ├── conflict-probes.md          # read-only coupling probes
+│       └── plan-format.md              # the plan and baseline formats upgrade-execute reads
+├── skills/upgrade-execute/
+│   ├── SKILL.md
+│   └── references/apply-commands.md    # per-ecosystem apply and restore commands
 └── README.md
 ```
 
 ## Dependencies
 
-Requires `dev-standards`. `upgrade-plan` judges test-suite adequacy against `test-structure`,
-`zero-tolerance-testing`, `test-python-tooling` and `test-typescript-tooling` rather than against an
-impression of what good tests look like, and `upgrade-execute` follows `commit-standards` for the
-per-step commit format. Without `dev-standards` installed, those references resolve to nothing and
-the adequacy gate falls back to judgement with no written standard behind it.
+Requires `dev-standards`. `upgrade-plan` loads `dev-standards:test-structure` (with its language
+references) and `dev-standards:zero-tolerance-testing` to judge suite adequacy
+against a written standard, and `upgrade-execute` loads `dev-standards:commit-standards` for the
+per-step commit format. If they are not installed, both skills say so and fall back to the
+repository's own conventions.
 
 ## License
 

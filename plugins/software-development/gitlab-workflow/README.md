@@ -1,36 +1,48 @@
 # gitlab-workflow
 
-GitLab transport for code review. Merge request lifecycle over the `glab` CLI, posting review
-findings to an MR, and `.gitlab-ci.yml` authoring.
+GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.
 
-It is the GitLab sibling of `github-workflow` and sits on the same forge-neutral core.
-`code-review-core` runs the whole review on a plain `git diff` and posts nothing anywhere; this
-plugin is the half that talks to GitLab.
+`code-review-core` runs a complete review over a plain `git diff` and posts nothing anywhere. This
+plugin is the other half: it talks to GitLab and forms no opinion about the code. It is the GitLab
+sibling of `github-workflow`, with the same seam and the same marker grammar, so a review can move
+between forges unchanged.
 
-## When to use it
+## Skills
 
-- Opening, watching or merging a merge request from the terminal.
-- Getting a finished `code-review-core` run onto an MR as inline discussions.
-- Writing or hardening a `.gitlab-ci.yml`, or working out why a pipeline did not run.
+| Skill | Use it when | Surface |
+| --- | --- | --- |
+| `mr-lifecycle` | Opening an MR, waiting on or triaging its pipeline, answering discussions, rebasing, merging | Claude Code (glab); elsewhere a GitLab MCP server, or commands for the user to run |
+| `review-transport` | A finished `code-review-core` run needs to reach a merge request | Claude Code (glab + script); elsewhere notes prepared by hand with the same markers |
+| `gitlab-ci-authoring` | Writing, hardening or debugging `.gitlab-ci.yml` | Anywhere for the YAML; glab for lint and pipeline history |
 
-## When not to use it
+Other plugins refer to these by name: `code-review-core:review` hands off to
+`gitlab-workflow:review-transport`, `engineering-workflows:release-train` uses `mr-lifecycle`, and
+`dev-guardrails:session-sync` relies on `glab mr rebase` as `mr-lifecycle` describes it.
 
-- **You want the review itself.** That is `code-review-core` — detectors, judgement agents, one
-  owner of the verdict. This plugin only carries its output.
-- **You are on GitHub.** `github-workflow` is the same shape for `gh`.
-- **You want issue tracking.** `jira-tracker` or `github-issues`, over `issue-tracker-core`.
+## What it does not own
+
+- **Judgement.** Severities, the verdict and the blocking list are settled by `code-review-core`'s
+  validator and `contract.py finalize` before this plugin is invoked. The transport passes them
+  through as they are.
+- **Issues, labels, milestones, boards.** Those belong to the issue-tracker plugins.
+- **The cloud side of CI credentials.** IAM roles and trust policies belong to
+  `terraform-aws:aws-iam-boundaries`; `gitlab-ci-authoring` covers the GitLab token side.
+- **Other forges.** `github-workflow` is the GitHub transport.
 
 ## Prerequisites
 
 ```bash
-glab auth status
-jq --version
+glab auth status    # the glab CLI, authenticated against your instance
+jq --version        # jq, for reading the review artifacts
 ```
 
-`glab` authenticated against your instance, and `jq`. The transport refuses rather than degrades if
-either is missing — a review that silently posted nothing would be worse than one that failed.
+`glab` resolves the project from the checkout's `origin` remote. Outside a checkout, pass
+`--repo <group>/<project>` to `glab mr` and `glab ci`, and `--project <group>/<project>` to
+`post-review.sh`.
 
 ## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
 
 ```
 /plugin marketplace add CatylAI/claude-marketplace
@@ -39,72 +51,75 @@ either is missing — a review that silently posted nothing would be worse than 
 
 `code-review-core` comes with it as a dependency.
 
-## What's inside
+**Cowork / web:** enable the plugin for your claude.ai account. The skills load there; the script
+does not run without a shell.
 
-| Name | Type | Purpose | Available |
-|------|------|---------|-----------|
-| `mr-lifecycle` | Skill | Open an MR, read its state, watch the pipeline, address feedback, merge | both |
-| `review-transport` | Skill | Get a finished `code-review-core` run onto a merge request | both |
-| `gitlab-ci-authoring` | Skill | Write, harden and debug `.gitlab-ci.yml` | both |
-| `scripts/post-review.sh` | Script | The transport itself | Claude Code only |
+## Layout
 
-## Surfaces
-
-Skills load in both Claude Code and Cowork (Claude Code on the web).
-
-**Everything here shells out to `glab`, and Cowork has no shell.** The procedures are readable on
-both surfaces; executing any of them needs Claude Code. `post-review.sh` is a shell script and does
-not exist on the web at all.
-
-## The seam
-
-`code-review-core` writes `.code-review/VALIDATED.json` and stops. That document is the contract:
-a ten-key finding shape with three orthogonal axes — `severity` for impact, `in_diff` for whether
-this change introduced it, `confidence` for how well it was traced.
-
-`post-review.sh` reads that document and turns it into a merge request review:
-
-- `in_diff: true` with a parseable `location` becomes an **inline discussion** on the diff.
-- Everything else goes in the **summary note**, including pre-existing findings, which keep their
-  severity and are marked as pre-existing rather than downgraded.
-- A finding whose location will not parse **degrades to the summary note**. It is never dropped.
-
-Three refusals are load-bearing and tested as refusals: a missing or unparseable `VALIDATED.json`
-is not an empty review, an `INCOMPLETE` verdict never becomes an approval, and finding text is
-passed as argument arrays so a title containing `$(…)` or backticks stays literal.
-
-### The part that is genuinely not GitHub
-
-Posting an inline comment on a GitLab MR needs a **`position` object**, not just a path and a line:
-`base_sha`, `head_sha`, `start_sha`, `new_path`, `old_path`, `new_line`. The three SHAs come from
-the MR's own `diff_refs`:
-
-```bash
-glab api "projects/:id/merge_requests/<iid>" --jq '.diff_refs'
+```
+gitlab-workflow/
+├── .claude-plugin/plugin.json       manifest; declares the code-review-core dependency
+├── skills/
+│   ├── mr-lifecycle/
+│   ├── review-transport/            + references/gitlab-api.md
+│   └── gitlab-ci-authoring/
+└── scripts/
+    ├── post-review.sh               the posting itself; the only file here that writes to GitLab
+    └── post-review.test.sh          its suite
 ```
 
-Get this wrong and every inline comment fails while the summary note still posts — which looks like
-a working transport that just happens to find nothing inline. `post-review.sh` fetches `diff_refs`
-once per run and fails loudly if they are absent.
+## The `code-review-core` seam
+
+The two plugins share one file. `contract.py finalize` writes `.code-review/VALIDATED.json`
+atomically, even when an input is missing: in that case the verdict is `INCOMPLETE` and
+`incomplete_inputs` names what could not be read. A missing file therefore means finalize never ran,
+and the transport refuses to post. `CONTEXT.json`'s `reviewed_sha` says which commit was reviewed.
+
+| Field | Transport use |
+| --- | --- |
+| `verdict` | Summary and reviewer state; only `APPROVE` approves, and only on the reviewed commit |
+| `blocking_reason_ids`, `blocking_floor` | The summary's blocking list, used as given |
+| `findings[].in_diff`, `location` | An inline note when in the diff and `path:line` lands on a diff line; the summary otherwise |
+| `incomplete_inputs`, `coverage_notes`, `decision_errors` | Shown in the summary |
+
+## Posting a review
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/post-review.sh" --dry-run --mr <iid>   # plan and payload; no API call
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/post-review.sh" --mr <iid>             # drafts, then one bulk_publish
+```
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--mr <iid>` | the MR for the current branch | |
+| `--project <group>/<project>` | from `origin` | required outside a checkout |
+| `--artifacts <dir>` | `.code-review` | where `VALIDATED.json` and `CONTEXT.json` live |
+| `--dry-run` | off | prints the routing plan and the exact payloads; makes no `glab` call |
+| `--no-approve` | off | an APPROVE verdict is posted without the approval |
+
+Re-running is safe. Each finding carries a hidden fingerprint of its path and title, so a re-run
+posts only findings that are new, plus a summary when the verdict changed. When the verdict stops
+being an approval, your standing approval is withdrawn first. `skills/review-transport` lists every
+guarantee and exit code; its `references/gitlab-api.md` covers positions, draft notes and the
+fallbacks for older GitLab; the header of `scripts/post-review.sh` gives the marker grammar.
 
 ## Tests
 
 ```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/post-review.test.sh"
-zsh  "$CLAUDE_PLUGIN_ROOT/scripts/post-review.test.sh"
+bash scripts/post-review.test.sh
 ```
 
-Plain shell, no arguments, portable to bash 3.2 and zsh. Builds its own fixtures under `$TMPDIR`
-and removes them on exit; no network, and `glab` is stubbed on `PATH`. A test needing a binary this
-machine lacks reports **skipped**, never a pass.
-
-House style is **plant a defect, assert a non-zero exit** — including a command-injection case that
-plants `$(…)` and backticks in a finding's text and asserts no file was created and the text
-survived as literal.
+Plain shell, no network. `glab` is a stateful stub placed first on `PATH` that keeps one simulated
+merge request per case, so repeated runs see what earlier runs posted. The suite plants a defect and
+asserts the refusal: no artifact, a truncated artifact, no `jq`, a failed read-back, pending drafts, a
+refused unapprove. It also covers routing, the verdict mapping, command-injection safety, unchanged
+lines, lines outside the diff, unanchored drafts, the summary fallback, the exit-12 re-run, the
+reviewed commit, idempotency across renumbered ids, forged markers and the size limit. A case whose
+binary is missing reports itself as skipped, never as passed.
 
 ## Dependencies
 
-`code-review-core`, for the pipeline whose output this transports.
+`code-review-core`, for the review this plugin posts.
 
 ## License
 

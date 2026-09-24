@@ -29,6 +29,12 @@ fi
 
 SRC="$RAW/.impact-files"
 filter_ext "$LIST" .py .ts .tsx .js .jsx .mjs .tf .sh .bash .zsh > "$SRC"
+# Deleted files too (review-scan.sh lists them in SCAN_DELETED). Every definition in a deleted file is
+# removed, and a removed definition with consumers is the break this detector exists to report.
+if [ -n "${SCAN_DELETED:-}" ] && [ -f "$SCAN_DELETED" ]; then
+  # Not filter_ext: it skips paths missing from disk, which is every deleted file.
+  grep -E '\.(py|ts|tsx|js|jsx|mjs|tf|sh|bash|zsh)$' "$SCAN_DELETED" >> "$SRC" || :
+fi
 
 if ! any_lines "$SRC"; then
   skip "impact" "no files with extractable symbols in the diff"
@@ -50,7 +56,16 @@ this level of analysis, so they are dropped instead of producing findings nobody
 import json, os, re, subprocess, sys
 
 src_path, out_path, base, source = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+# 40 symbols x one `git grep` each keeps the detector to seconds on a large repo; 20 consumer paths
+# is a list a reviewer will actually read; 4 characters is the shortest name that is usually an
+# identifier rather than a common word (`run`, `get`, `id` match half of any repo).
 MAX_SYMBOLS, MAX_CONSUMERS, MIN_NAME_LEN = 40, 20, 4
+# Seconds. A diff or grep that runs longer than this is on a repo too large for this cheap pass;
+# the detector records nothing for it rather than stalling the whole scan.
+DIFF_TIMEOUT, GREP_TIMEOUT = 120, 60
+# quotePath=false: a non-ASCII path must match the changed-file list byte for byte, and git's
+# default C-quoting (`"caf\303\251.py"`) never would. Literal pathspecs: `[ab].py` is a name.
+GIT = ["git", "-c", "core.quotePath=false", "--literal-pathspecs"]
 
 # A symbol referenced in more than this many files is not a symbol with consumers, it is a common
 # word. Measured on a real diff: `main` came back with 68 "consumers", `pass` with 53, `fail` with
@@ -97,8 +112,8 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 def diff(*args):
     try:
-        return subprocess.run(["git", "diff", "--no-color", "-U0"] + list(args),
-                              capture_output=True, text=True, timeout=120).stdout
+        return subprocess.run(GIT + ["diff", "--no-color", "-U0"] + list(args),
+                              capture_output=True, text=True, timeout=DIFF_TIMEOUT).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -120,13 +135,25 @@ text = "".join(diff(rng, "--", *files[i:i + 200]) for i in range(0, len(files), 
 # Reporting the added-only case is what produced 16 useless NIT findings on the terraform benchmark
 # case, where the change added a whole new module and every one of its variables was "changed with
 # consumers". Only removed/changed symbols get a consumer search.
-symbols, added, removed, dropped_short, path = {}, set(), set(), 0, None
+symbols, added, removed, dropped_short, path, old_path = {}, set(), set(), 0, None, None
 new_line = 0
 for line in text.splitlines():
-    if line.startswith("+++ b/"):
-        path = line[6:]
+    # git appends a TAB to the ---/+++ name when the path contains a space; it is not part of the
+    # name. A deleted file has `+++ /dev/null`, so its path comes from the `--- a/` line; before,
+    # the previous file's path carried over and the deletion was attributed to the wrong file.
+    if line.startswith("diff --git"):
+        path = old_path = None
         continue
-    if line.startswith("--- ") or line.startswith("diff --git"):
+    if line.startswith("--- a/"):
+        old_path = line[6:].rstrip("\t")
+        continue
+    if line.startswith("+++ b/"):
+        path = line[6:].rstrip("\t")
+        continue
+    if line.startswith("+++ /dev/null"):
+        path = old_path
+        continue
+    if line.startswith("--- "):
         continue
     m = HUNK.match(line)
     if m:
@@ -154,9 +181,10 @@ for line in text.splitlines():
                     continue
                 # Anchor on the hunk's new-side start line. For an ADDED definition that is the
                 # definition itself; for a REMOVED one there is no new-side line at all, and the
-                # hunk start is the nearest position that is genuinely inside the diff — without it
-                # the finding would be dropped by filter-carried-findings.py and the deletion of a
-                # still-referenced symbol would go unreported, which is the worst miss in the set.
+                # hunk start is the line git says the deletion follows (0 at the top of the file,
+                # clamped to 1). filter-carried-findings.py treats exactly that line as changed for
+                # a pure-deletion hunk, so the deletion of a still-referenced symbol survives
+                # diff-scoping. It was dropped before that rule existed, the worst miss in the set.
                 symbols.setdefault(name, (path, max(new_line, 1)))
                 (added if line.startswith("+") else removed).add(name)
         if line.startswith("+"):
@@ -186,8 +214,8 @@ for name in names:
         continue
     path, line = symbols[name]
     try:
-        r = subprocess.run(["git", "grep", "-l", "-w", "-F", "--", name],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(GIT + ["grep", "-l", "-w", "-F", "--", name],
+                           capture_output=True, text=True, timeout=GREP_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         continue
     # rc 1 = no match, which is normal and not an error. Anything else means git failed.

@@ -1,7 +1,7 @@
 ---
 name: data-classification
+description: "Use when a review is about to raise a PII, sensitive-data or leaked-credential finding, or when deciding whether a value may go in a repo, doc site, ticket or log. Classifies the value into four tiers, gates it on who can read where it lands, then sets severity."
 license: MIT
-description: Classify a piece of data, then gate it on who can read where it is going, and only then assign a severity. Use whenever a review is about to raise a "PII / sensitive data / leaked credential" finding, or when deciding whether a value is safe to put in a repo, a doc site, a ticket or a log.
 ---
 
 # Data classification for code review
@@ -54,11 +54,10 @@ Before assigning any severity, answer:
 The gate sets **impact**, and impact is the only thing severity encodes. It does not set
 whether this change introduced the exposure (that is `in_diff`) and it does not set how
 sure you are of the audience (that is `confidence`). An audience you could not verify is
-medium confidence at the severity the class earns — never a lower tier. See Case C.
+medium confidence at the severity the class earns, not a lower tier. See Case C.
 
-The tier names below are the machine-contract vocabulary (`BLOCKER`, `MAJOR`, `MINOR`,
-`NIT`). Writing a markdown report instead? Use the 1:1 prose names from
-`code-review-standards`: Critical, High, Medium, Low.
+Severity names below are the contract values; `code-review-standards` owns what they mean and their
+prose names for Markdown reports.
 
 ### Case A — the destination is internal-only
 
@@ -68,7 +67,7 @@ return 404 to anonymous requests.
 - `public`, `internal` → **no finding.** The audience is authorized and the class is the
   internal baseline, so nothing reached anyone without the permit. This is the one place
   where raising nothing is correct — because there is no exposure, not because the exposure
-  is small. Record a NIT only if the shape is worth noting for its own sake.
+  is small.
 - `confidential` → **MINOR** when the data is no more sensitive than what already lives in
   the systems the same audience can already read. The diff is not a re-disclosure, so the
   impact is reduced; the exposure is still real, so the finding is still real. Not a NIT —
@@ -97,7 +96,7 @@ A public repository, a published docs site, a blog post, an artifact handed to a
 A mirror whose visibility has not been checked this session, a docs site with ambiguous
 access controls, a new artifact type with no documented audience.
 
-**Default to Case B — the stricter gate — and ask.** State the uncertainty in the finding:
+**Default to Case B, the stricter gate, and ask.** State the uncertainty in the finding:
 "audience visibility unverified; treated as public until confirmed."
 
 The ask has a field. Record the restrictive severity Case B earns and set confidence to
@@ -121,21 +120,25 @@ exists to prevent.
 
 Step 4 is the one people skip, and it is the one that makes the finding durable.
 
-Not actionable:
+<example>
+Not actionable: "Customer name in a doc — Medium."
 
-> Customer name in a doc — Medium.
+Actionable: "`confidential` customer data (`Example Corp` plus CRM account id `ACCT-0001`) in a
+private-repository document; audience verified internal-only (anonymous fetch returned 404).
+MINOR, `in_diff: true`, `confidence: HIGH`. Snaps to BLOCKER if this repository or its mirror
+becomes public."
+</example>
 
-Actionable:
+That MINOR is load-bearing: at the default blocking floor it can fail the job today, and the
+snap-back has a tier to snap from. Filed as a NIT, a real exposure would never block at any floor
+and would read as a cosmetic remark.
 
-> `confidential` customer data (`Acme Corp` plus CRM account id `001aA000000aaaaAAA`) in a
-> private-repository document; audience verified internal-only (anonymous fetch returned
-> 404). MINOR, `in_diff: true`, `confidence: HIGH`. Snaps to BLOCKER if this repository or
-> its mirror becomes public.
-
-That MINOR is load-bearing. With the default blocking floor at MINOR, the finding can fail
-the job today and the snap-back has a tier to snap from. Authored as a NIT it short-circuits
-above the `ux_impact` disjunct and never blocks at any floor — which is how a real exposure
-turns into a cosmetic remark.
+<example>
+A public docs page adds `billing-ledger-v2`, an internal service name. A search of the public
+mirror found no earlier mention. Finding: "`internal` service name newly published on a public
+docs site. MAJOR, `in_diff: true`, `confidence: MEDIUM` (absence from public sources is not
+proven). Drops to NIT if the name is shown to be already public."
+</example>
 
 ## Recurring wrong calls
 
@@ -152,3 +155,12 @@ turns into a cosmetic remark.
 - **"The audience is authorized, so it's a NIT."** If the audience is genuinely authorized
   and the class is the internal baseline, there is no finding at all. If the class is
   higher, there is a real one. NIT is neither.
+
+## Verify
+
+Before filing, confirm the finding states all four: the class, the destination and how its audience
+was determined, the severity, and (for a `MINOR` or `NIT`) the snap-back condition. A finding missing
+one goes back through the procedure.
+
+Without a checkout, classify pasted values the same way, and treat the destination's audience as
+uncertain (Case C) unless the user states it.

@@ -1,224 +1,176 @@
 ---
 name: upgrade-research
-description: "Researches, for every runtime and dependency in the inventory, the current version, the latest stable release, support status and end-of-life date, known advisories, and — first and most important — the deployment ceiling that caps how far the upgrade can actually go. Prefers authoritative registry commands over web search. Use after dependency-inventory and before planning an upgrade, or whenever asked whether a runtime is still supported or what version a platform allows."
+description: "Researches each inventoried runtime and dependency: the deployment ceiling first, then latest stable and in-major versions, support status, EOL date and published advisories, ranked by exposure. Use when dependency-inventory has run, or when asked whether a runtime is still supported, what version a platform allows, or what to upgrade first. Not for building the inventory (use dependency-inventory) or ordering steps (use upgrade-plan); not a vulnerability scanner."
+when_to_use: "is Node 20 still supported, what Python version does Lambda allow, is our runtime end of life, what is the latest version of, what should we upgrade first, how far behind are we, research these dependencies, which upgrades are security relevant"
+argument-hint: "[inventory table, or a runtime/package to check, e.g. \"python 3.9 on Lambda\"]"
+allowed-tools: Read, Glob, Grep, WebFetch, WebSearch, Bash(npm view *), Bash(npm outdated *), Bash(npm audit --json *), Bash(pip index versions *), Bash(go list -m *), Bash(govulncheck *), Bash(cargo search *), Bash(bundle outdated *), Bash(poetry show *), Bash(docker manifest inspect *)
+disallowed-tools: Write, Edit, NotebookEdit
 license: MIT
 ---
 
 # upgrade-research
 
-Stage 2. For each row of the inventory, establish five things. Do them in this order, because the
-first one changes the meaning of all the others.
+Stage 2 of the upgrade pipeline. Input: $ARGUMENTS. If that is an inventory table, or the
+conversation already holds one from `dependency-inventory`, research every row. If it names a single
+runtime or package, research just that (rows `Q1`, `Q2`, …). If it is empty and there is no
+inventory, run `dependency-inventory` first.
 
-1. **The deployment ceiling** — the highest version the thing this deploys onto will accept.
-2. **Current** — from the inventory's resolved column.
-3. **Latest stable** — from the registry, not from memory.
-4. **Support status and EOL date** — is this version still receiving security patches.
-5. **Known advisories** — against the *resolved* version specifically.
+This skill reads and queries; it changes nothing. It reads advisories that registries and lockfile
+auditors already publish; it is not a vulnerability scanner and finds nothing undisclosed.
+
+**Without a shell (Cowork/web):** every registry and EOL source in
+[references/registries.md](references/registries.md) has an HTTP endpoint, so use web fetch against
+those. Mark `Advisories` as `not-checked` where only a local auditor could answer.
 
 ## The ceiling comes first
 
-Researching upstream before the ceiling produces a number you then have to walk back, and walking
-back is where the "well, 23 is only one more than 22" reasoning creeps in. Find the ceiling first
-and the research question becomes bounded: *what is the best version at or below this line*.
+Latest stable is often the wrong target. The ceiling is the highest version the deployment target
+accepts, and it bounds every other number: finding it first turns the question into "what is the
+best version at or below this line" and stops a plan from proposing a runtime the platform rejects.
 
-Where ceilings come from, by deployment target:
+For each `runtime` and `base-image` row, and any row the platform constrains, find the ceiling from
+the deployment target:
 
-| Target | Ceiling source | How to find it |
-| --- | --- | --- |
-| Serverless functions (Lambda, Cloud Functions, Azure Functions) | The provider's supported-runtimes list, which lags upstream by months and deprecates on a published schedule | Read the provider's supported-runtimes documentation page; also read the runtime identifier already configured in the IaC (`runtime = "nodejs22.x"`) |
-| Managed containers (Cloud Run, App Runner, ECS/Fargate) | Usually no language ceiling — you ship the image — but the *base image availability* is the real ceiling | Check the tag exists: `docker manifest inspect <image>:<tag>` |
-| Managed Kubernetes (EKS, GKE, AKS) | Control-plane version pins the maximum kubelet, which pins node images and client-tool skew | The cluster's current and available versions, from the provider's version-support page and the cluster API |
-| Terraform Cloud / Enterprise | The workspace's pinned `terraform_version` overrides `required_version` intent | The workspace settings; the MCP `get_workspace_details` tool when connected, otherwise ask |
-| CI | The runner image's preinstalled toolchains, and which versions the `setup-*` actions can install | The runner image's published software manifest; the action's supported-version list |
-| Organisational policy | An approved-versions list, a base-image registry that only carries certain tags, a security baseline | Ask. This one is never discoverable from the repo. |
-| Downstream consumers (for a library) | The oldest runtime the library promises to support | The package's own declared `engines` / `requires-python` / `rust-version` and its documented support policy |
-
-Read the IaC for the ceiling that is already encoded, because it is usually there:
-
-```bash
-grep -rn 'runtime\s*=\|runtime:' --include='*.tf' --include='*.yaml' --include='*.yml' .
-grep -rn 'image\s*=\|image:' --include='*.tf' .
-grep -rn 'version\s*=' --include='*.tf' . | grep -i 'cluster\|kubernetes\|engine'
-grep -rn 'terraform_version' --include='*.tf' --include='*.hcl' .
-```
-
-**Record "no ceiling found" as an explicit finding, never as an absence.** The two are not the same:
-"we checked the deployment target and it imposes no cap" is a research result; a blank cell is an
-unasked question. The difference surfaces when the plan is executed and deployment rejects the
-artifact. If the deployment target itself is unknown — no IaC in the repo, no obvious platform —
-say that, and ask the user rather than assuming a container with no ceiling.
-
-## Four different numbers, never conflated
-
-For every row, these are distinct and all four can differ:
-
-| Number | Meaning |
+| Target | Ceiling source |
 | --- | --- |
-| **latest** | The newest published version, including prereleases, RCs, betas, and `next` tags |
-| **latest stable** | The newest version the project considers production-ready — the `latest` dist-tag, the newest non-prerelease semver |
-| **latest supported by our ceiling** | The highest stable version at or below the deployment ceiling |
-| **latest reachable without a breaking change** | The highest version within the current major |
+| Serverless functions (Lambda, Cloud Functions, Azure Functions) | The provider's supported-runtimes page, plus the runtime identifier already in the IaC |
+| Managed containers (Cloud Run, App Runner, ECS/Fargate) | Usually no language cap; the base image tag and architecture you need must exist in the registry |
+| Managed Kubernetes (EKS, GKE, AKS) | The cluster's control-plane version and the provider's version-support page; it caps kubelet, node images and client skew |
+| HCP Terraform / Terraform Enterprise | The workspace's Terraform version setting, which overrides `required_version` intent |
+| CI | The runner image's preinstalled toolchains and the versions the `setup-*` actions can install |
+| Organisational policy | An approved-versions list or internal image registry; only the user can tell you |
+| Downstream consumers (libraries) | The oldest runtime the library promises to support (`engines`, `requires-python`, `rust-version`) |
 
-The recommendation is the third. The fourth is what the plan can do in one low-risk step. The first
-is never a target. Reporting only one number is how a plan ends up proposing Node 24 for a Lambda
-that stops at 22, or proposing a major bump described as "a minor update".
+Search the IaC first, because the ceiling is often already encoded there: use Grep for `runtime`,
+`image`, `kubernetes_version` / `cluster_version` / `engine_version`, and `terraform_version` across
+`*.tf`, `*.yaml`, `*.yml` and `*.hcl`.
 
-Always state which constraint bound the recommendation: *upstream* (nothing newer exists), *ceiling*
-(the platform caps us here), or *breaking* (the next version is a major we are not taking yet).
+Record the result in one of three states:
 
-## Prefer registry commands over web search
+- a version (`22.x`, `1.9.x`) with its source;
+- `none-found`: you checked the deployment target and it imposes no cap (say what you checked);
+- `unknown`: the deployment target itself is unknown, or only the user can answer.
 
-Registries are authoritative and versioned. Web pages are summaries of registries, written at some
-point in the past. Use the registry for anything the registry carries.
+`none-found` is a research result; `unknown` is an open question. Collect every `unknown` row and ask
+the user about them together in one message before recommending a version for those rows. If the
+user cannot answer, keep `unknown` and set `Recommended` to `needs-ceiling`.
 
-### Node
+## Versions, support and advisories
 
-```bash
-npm view <pkg> version                 # latest stable (the `latest` dist-tag)
-npm view <pkg> dist-tags --json        # latest, next, beta — shows what is prerelease
-npm view <pkg> versions --json         # every published version
-npm view <pkg> engines peerDependencies deprecated
-npm view <pkg> time --json             # publish dates; how stale is the current pin
-npm outdated                           # current vs wanted vs latest, for the whole project
-npm audit --json                       # advisories against the resolved tree
-```
+For each row, using [references/registries.md](references/registries.md):
 
-`npm outdated` gives three columns that map to the table above: `Current` (resolved), `Wanted`
-(highest within the declared constraint — reachable with no manifest edit), `Latest` (latest
-stable). It is the fastest way to separate "the lockfile is stale" from "the constraint is stale".
+1. **Latest stable**: from the registry (the `latest` dist-tag or newest non-prerelease), never
+   from memory. Prereleases, RCs and `next` tags are never targets.
+2. **In-major latest**: the highest stable version within the current major, which is what one
+   low-risk step can reach.
+3. **Recommended**: the highest stable version at or below the ceiling. Name what bound it in
+   `Bound by`:
+   - `upstream`: nothing newer exists;
+   - `ceiling`: the platform caps it here;
+   - `breaking`: the next version is a major, so the recommendation stays in-major; `upgrade-plan`
+     sees the available major as `Latest stable` above `In-major latest` and decides whether to
+     schedule it;
+   - `unknown`: ceiling unknown, no recommendation yet.
+4. **Support status and EOL**: registries do not carry support policy, so this is the one place
+   for web research. Use endoflife.date or the project's own release-policy page, and the cloud
+   provider's runtime deprecation page for managed runtimes. A support window cannot be derived from
+   the version number; if no source answers, write `unknown`.
+5. **Advisories**: run the ecosystem's auditor against the resolved versions, or query OSV by
+   package and version. For `govulncheck`, report the vulnerabilities it finds in called code and
+   say that is the scope.
 
-For the Node runtime itself:
+Advisories found on transitive packages absent from the inventory get new rows `T1`, `T2`, … with
+Kind `transitive`.
 
-```bash
-npm view node versions --json          # the `node` npm package mirrors release versions
-curl -s https://nodejs.org/dist/index.json | head -c 2000   # includes `lts` field per release
-```
+## Rank by exposure, not distance
 
-### Python
+Assign each row the highest rank that applies:
 
-```bash
-pip index versions <pkg>               # available versions (pip >= 21.2; still marked experimental)
-pip download <pkg>== 2>&1 | head -5    # fallback: the error lists available versions
-python3 -m pip install '<pkg>==' 2>&1 | head -5
-uv pip list --outdated                 # uv
-poetry show --outdated                 # Poetry
-pip-audit                              # advisories against the installed set
-```
-
-`pip index versions` is the intended command but has been flagged experimental across several pip
-releases; if it is unavailable, the deliberate-bad-version trick in the second line is reliable
-because the resolver error enumerates candidates.
-
-### Go
-
-```bash
-go list -m -versions <module>              # every version the proxy knows
-go list -m -u all                          # current and available upgrade per module
-go list -m -u -json all                    # same, machine-readable
-govulncheck ./...                          # advisories, filtered to code paths actually reachable
-```
-
-`govulncheck` is meaningfully better than a lockfile scan because it reports only vulnerabilities in
-functions the binary can actually reach. A vulnerability it does not report is still present in the
-dependency; it is just not reachable from this code. Say which of the two you are reporting.
-
-### Rust
-
-```bash
-cargo search <crate> --limit 1         # latest published version
-cargo outdated                         # requires cargo-outdated
-cargo audit                            # requires cargo-audit; advisories from RustSec
-cargo update --dry-run                 # what the resolver would move, without moving it
-```
-
-### Ruby, Java, Kotlin
-
-```bash
-gem list <gem> --remote --all          # available versions
-bundle outdated                        # current vs newest
-bundle audit                           # requires bundler-audit
-
-mvn versions:display-dependency-updates
-mvn versions:display-plugin-updates
-./gradlew dependencyUpdates            # requires the ben-manes versions plugin
-```
-
-### Terraform
-
-```bash
-terraform providers                                  # what is required, by module
-terraform init -upgrade -backend=false               # re-resolves within constraints, rewrites the lock
-terraform version -json                              # CLI and provider versions in use
-```
-
-The registry API answers version questions without touching state:
-
-```bash
-curl -s https://registry.terraform.io/v1/providers/hashicorp/aws/versions | head -c 2000
-curl -s https://registry.terraform.io/v1/modules/<namespace>/<name>/<provider>/versions | head -c 2000
-```
-
-When the Terraform MCP server is connected, `get_latest_provider_version`,
-`get_latest_module_version`, `get_provider_details` and `get_workspace_details` answer the same
-questions more directly, and `get_workspace_details` is the only way to read a Terraform Cloud
-workspace's pinned CLI version without asking a human.
-
-### Containers and GitHub releases
-
-```bash
-docker manifest inspect <image>:<tag>                       # does the tag exist; which platforms
-docker manifest inspect <image>:<tag> | grep architecture   # arm64 availability is a real ceiling
-gh api /repos/<owner>/<repo>/releases/latest --jq '.tag_name,.published_at'
-gh api /repos/<owner>/<repo>/releases --jq '.[] | select(.prerelease==false) | .tag_name' | head -10
-gh api /repos/<owner>/<repo>/tags --jq '.[].name' | head -20
-```
-
-Registries for image tags vary — Docker Hub, GHCR, ECR Public, gcr.io — and none of them has a
-universal "list tags" CLI. `docker manifest inspect` answers "does this specific tag exist", which
-is the question that matters when validating a proposed bump. For enumerating tags, use the
-registry's own API and say which registry you queried.
-
-## What registries do not carry — and only then, web search
-
-Registries know versions. They do not know support policy. Use web research for exactly these:
-
-| Question | Where to look |
+| Rank | Condition |
 | --- | --- |
-| EOL date and support status of a runtime | `endoflife.date` — it carries Node, Python, Go, Ruby, Java, Terraform, Kubernetes, Debian, Ubuntu, Alpine, PostgreSQL and most base images, each with release, active-support-end and security-support-end dates. Machine-readable: `curl -s https://endoflife.date/api/nodejs.json` |
-| A language's own support schedule | The project's release or downloads page — Node's release schedule, Python's developer guide "status of versions" page, Go's release policy (the two most recent majors), Rust's six-week train |
-| Cloud runtime deprecation dates | The provider's runtime-support documentation, which publishes deprecation and block-creation dates per runtime identifier |
-| Migration guides and breaking changes | The project's own upgrade guide and release notes for the specific major, plus its `CHANGELOG.md` and the release body on GitHub |
-| Whether an advisory applies to this configuration | The advisory text itself — GHSA, CVE record, RustSec or PyPA advisory database entry |
+| 1 | Out of support now: no security patches are issued for the resolved version |
+| 2 | Out of support soon: EOL falls within the planning horizon (default 6 months; use the user's horizon if given) |
+| 3 | Known advisory against the resolved version |
+| 4 | Feature-blocked: the user named something that needs a newer version |
+| 5 | Merely behind, or current |
 
-Name the source in the output. "EOL 2026-04-30 per endoflife.date/nodejs" is checkable; "EOL next
-spring, per the docs" is not.
+A runtime three minors behind but supported ranks below one a single minor behind that loses
+support next month. Distance from latest never changes the rank.
 
-**If web access is unavailable on this surface**, say which rows have unknown EOL status rather than
-guessing from the version number. A runtime's support window is not derivable from its version.
+## Handoff contract
 
-## Output — the research table
+`upgrade-plan` reads this exact format. The input is the `dependency-inventory` table (columns
+`ID | Ecosystem | Manifest | Name | Kind | Declared | Resolved | Resolved from | Lockfile | Pin |
+Notes`); carry `ID`, `Name` and `Kind` over unchanged and copy `Resolved` into `Current`. Changing
+a column or enum here requires the same change in `upgrade-plan`.
 
-One row per inventory row, runtimes first.
+```markdown
+## Upgrade research — <repo name>
+Planning horizon: <N months> · Researched: <YYYY-MM-DD>
 
-| Kind | Name | Current | Latest stable | Ceiling | Ceiling source | Recommended | Bound by | Support status | EOL | Advisories |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| runtime | node | 20.11.1 | 24.x | 22.x | Lambda supported runtimes (`nodejs22.x`) | 22.x (latest 22 patch) | ceiling | maintenance LTS | 2026-04-30 | none |
-| runtime | terraform | 1.9.5 | 1.13.x | 1.9.x | TFC workspace pin | 1.9.x latest patch | ceiling | supported | — | none |
-| provider | hashicorp/aws | 5.62.0 | 6.x | none found | no ceiling found — checked TFC + CI | 5.latest now, 6.x as a major step | breaking | supported | — | none |
-| direct dep | express | 4.19.2 | 5.x | none found | no ceiling found | 4.latest now | breaking | v4 maintained | — | none |
-| base image | node:22-alpine | sha256:abc… | 22.x-alpine current | 22 (matches runtime) | function runtime | retag and re-pin digest | ceiling | — | — | — |
+| ID | Name | Kind | Current | Latest stable | In-major latest | Ceiling | Ceiling source | Recommended | Bound by | Support | EOL | Advisories | Rank | Sources |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Then rank the rows by the priority ladder, which is about exposure rather than distance:
+### Unknowns
+- **Ceiling unknown:** <row IDs, or "none">
+- **EOL unknown:** <row IDs, or "none">
+- **Queries failed:** <row IDs and the command or URL that failed, or "none">
+```
 
-1. **Out of support now** — no security patches are being issued for this version.
-2. **Out of support soon** — EOL falls inside the planning horizon; state the date.
-3. **Known advisory** against the resolved version.
-4. **Feature-blocked** — something the team needs requires a newer version.
-5. **Merely behind** — everything else, in whatever order is convenient.
+| Column | Allowed values |
+| --- | --- |
+| `ID` | Inventory ID (`I…`); `T…` for new transitive advisory rows; `Q…` for ad-hoc questions |
+| `Name`, `Kind` | Copied from the inventory (`Kind` enum: `runtime`, `direct`, `dev`, `transitive`, `provider`, `module`, `base-image`, `action`, `hook`, `tool`) |
+| `Current` | The inventory's `Resolved` value, including `unresolved` |
+| `Latest stable`, `In-major latest` | A version, or `unknown` |
+| `Ceiling` | A version or version line (`22.x`), `none-found`, or `unknown` |
+| `Ceiling source` | Where the ceiling came from (file:line, provider page, user), or what was checked for `none-found` |
+| `Recommended` | A target version or version line (`24.x`), `keep` (already at the best allowed version), or `needs-ceiling` |
+| `Bound by` | `upstream`, `ceiling`, `breaking`, `unknown` |
+| `Support` | `supported`, `eol-soon`, `eol`, `unknown`, `n/a` (no support policy exists, e.g. most libraries) |
+| `EOL` | `YYYY-MM-DD`, `none-published`, `unknown`, or `n/a` |
+| `Advisories` | Comma-separated IDs (`GHSA-…`, `CVE-…`, `GO-…`, `RUSTSEC-…`, `PYSEC-…`), `none` (checked, clean), `not-checked`, or `n/a` (no package to audit, e.g. a bare runtime question) |
+| `Rank` | `1`–`5` from the ladder above |
+| `Sources` | Short citations for Latest, EOL and Advisories: command run or URL fetched |
 
-A runtime three minors behind but actively supported ranks below one minor behind and out of support
-next month. Rank by the ladder, never by how many versions separate current from latest.
+Order rows by `Rank` (1 first), runtimes before other kinds within a rank.
 
-Close with the unknowns, listed rather than omitted: rows where the ceiling was not found, rows
-where EOL could not be established, and rows where the registry query failed. Hand the table to
-`upgrade-plan`.
+## Verify
+
+Before handing off:
+
+- Every inventory ID appears exactly once; no row has a blank cell.
+- Every `runtime` and `base-image` row has a `Ceiling` of a version, `none-found` or `unknown`, and
+  every `unknown` is listed under Unknowns.
+- Every value that is not `unknown`, `not-checked` or `n/a` has a matching entry in `Sources`.
+- `Rank` agrees with `Support` and `Advisories`: `eol` → 1, `eol-soon` → 2 or better, any advisory ID
+  → 3 or better.
+
+Fix any failure and re-check, then tell the user the next stage is `/dependency-upgrades:upgrade-plan`,
+which they start themselves because it runs the test suite and writes `.upgrade/`.
+
+## Examples
+
+<example>
+Illustrative values, not current facts. A Node service deployed to Lambda:
+
+| ID | Name | Kind | Current | Latest stable | In-major latest | Ceiling | Ceiling source | Recommended | Bound by | Support | EOL | Advisories | Rank | Sources |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| I1 | node | runtime | 20.11.1 | 26.1.0 | 20.19.2 | 22.x | `infra/lambda.tf:14` + Lambda runtimes page | 22.x | ceiling | eol | 2026-04-30 | none | 1 | endoflife.date/nodejs; nodejs.org/dist/index.json |
+| I3 | express | direct | 4.19.2 | 5.2.1 | 4.21.2 | none-found | Lambda imposes no cap on libraries | 4.21.2 | breaking | n/a | n/a | GHSA-xxxx-xxxx-xxxx | 3 | `npm view express`; `npm audit --json` |
+| I5 | hashicorp/aws | provider | 5.62.0 | 6.4.0 | 5.100.0 | none-found | checked HCP workspace and CI | 5.100.0 | breaking | n/a | n/a | none | 5 | Terraform registry versions API |
+</example>
+
+<example>
+Ad-hoc question "is Python 3.9 OK on our Cloud Function?" with no repo: one row `Q1`. The
+deployment target is known (Cloud Functions), so fetch its supported-runtimes page for the ceiling
+and endoflife.date for EOL. `Advisories` is `n/a` for a runtime with no package context, and the
+answer leads with the Rank and the date.
+</example>
+
+<example>
+No IaC in the repo and the user has not said where it deploys: ask once, listing every `runtime`
+and `base-image` row. If the user does not know, those rows get `Ceiling` = `unknown`,
+`Recommended` = `needs-ceiling`, `Bound by` = `unknown`, and appear under **Ceiling unknown**.
+Their EOL and advisory research still goes ahead.
+</example>

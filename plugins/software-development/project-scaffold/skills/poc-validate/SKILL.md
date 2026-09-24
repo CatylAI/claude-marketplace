@@ -1,11 +1,10 @@
 ---
 name: poc-validate
+description: "Checks a proof of concept against its own .poc/poc.json contract and recommends GRADUATE, KILL or EXTEND. Use when a POC reaches a time-box checkpoint or feels adrift. Read-only. Not for closing a POC (use poc-graduate); not for starting one (use poc-start)."
+when_to_use: "is this POC done, check kill criteria, POC checkpoint, should we keep going, validate a proof of concept"
+allowed-tools: Read, Glob, Grep, Bash(pwd), Bash(date -u *), Bash(git log *)
+disallowed-tools: Write, Edit, NotebookEdit
 license: MIT
-description: Read-only check of a proof of concept against the contract it wrote at the start — has the question been answered, has the success signal been observed, has any kill criterion been met, is the time box spent, and is there evidence for each claim. Reports MET, UNMET, or UNMEASURED per criterion and a recommendation to graduate, kill, or extend, but changes nothing. Use before deciding the fate of a POC, at a time-box checkpoint, or when a POC feels like it is drifting. Not for POCs that do not exist yet, and it never performs the graduation itself.
-when_to_use: is this POC done, check kill criteria, POC checkpoint, should we keep going, validate a proof of concept, time box review
-user-invocable: true
-context: inline
-allowed-tools: Read, Glob, Grep, Bash(cat:*), Bash(ls:*), Bash(find:*), Bash(grep:*), Bash(jq:*), Bash(date:*), Bash(git log:*), Bash(wc:*), Bash(pwd:*), Bash(test:*), Task
 ---
 
 # Validate a POC Against Its Own Contract
@@ -15,26 +14,18 @@ read-only: it reports, it does not fix, scaffold, or migrate.
 
 ## Step 1 — Gather context and load the contract
 
-Run these and work from the output:
+Run `pwd` and `date -u +%Y-%m-%d` (Step 2 compares today against `time_box.ends`), then Read
+`.poc/poc.json`.
 
-```bash
-pwd
-test -f .poc/poc.json && echo present || echo "missing — not a POC"
-date -u +%Y-%m-%d
-```
-
-In order: the current directory, whether a POC contract is present, and today's date — Step 2
-compares it against `time_box.ends`.
-
-If you cannot run commands here — a surface with no shell — ask the user to paste the output
-and the contents of `.poc/poc.json`, and wait for both. Do not judge a time box against an
-assumed date, and do not validate a contract you have not read.
+**Without a checkout (web/Cowork):** ask the user to paste `.poc/poc.json` and today's date, and
+wait for both. Skip the drift scan in Step 6 and judge drift only from what they describe.
+Do not judge a time box against an assumed date, or a contract you have not read.
 
 If `.poc/poc.json` is absent, stop: this is not a POC. Suggest `poc-start` if one is
 intended.
 
 If it is present but `poc_active` is `false`, report that the POC is already closed, show
-`graduated_at` / `killed_at` and the recorded outcome, and stop.
+`outcome`, `closed_at` and `decision_rationale` (written by `poc-graduate`), and stop.
 
 Read and restate the contract before judging anything: the question, the success signal,
 each kill criterion, the time box, the out-of-scope list, and the target runtime. If the
@@ -76,9 +67,7 @@ the threshold, not a characterization of it.
 
 ## Step 5 — Check the evidence trail itself
 
-```bash
-jq '.evidence | length' .poc/poc.json 2>/dev/null
-```
+Count the entries in the contract's `evidence` array.
 
 - **Empty** — the POC has produced no recorded observations. Report this at the top of the
   findings; it dominates everything else. A repository full of code with no evidence answers
@@ -89,22 +78,29 @@ jq '.evidence | length' .poc/poc.json 2>/dev/null
 
 ## Step 6 — Check for drift
 
-Scan for work that the contract put out of scope, and for the shape of a project rather than
-an experiment:
+Scan for work the contract put out of scope, and for the shape of a project rather than an
+experiment:
 
-```bash
-find . -maxdepth 2 -name '*ci*.y*ml' -o -maxdepth 2 -name '.github' -o -maxdepth 2 -name '.circleci' 2>/dev/null | head -5
-find . -name 'Dockerfile*' -not -path './.git/*' | wc -l
-find . -name '*.tf' -o -name 'Chart.yaml' -not -path './.git/*' | head -5
-```
+- Glob each of `.github/**`, `**/.gitlab-ci.yml`, `.circleci/**`, `**/Dockerfile*`, `**/*.tf` and
+  `**/Chart.yaml`.
+- Run `git log --oneline -20 --stat`.
 
-Report drift as an observation, not a violation: deployment pipelines, multi-service
-topologies, configuration abstraction layers, or hardening work inside a POC are time that
-did not go into answering the question. Quantify it if you can — "three of the last ten
-commits touched deployment plumbing" lands better than "there is scope creep".
+Compare what you find against `out_of_scope` literally, then against these shapes, which mean
+"project, not experiment" unless the contract put them in scope:
 
-Also check the reverse drift: has the POC stopped touching the question entirely? Compare
-recent changes against the question's subject matter.
+| Shape | Why it costs the box | Cheaper path for a POC |
+| --- | --- | --- |
+| CI/CD pipeline configuration | Delivery machinery, not an answer | Run it locally |
+| Deployment or hosting definitions | The target runtime is a graduation concern | Local execution |
+| More than one service | Coordination overhead | One process |
+| Abstraction over a second implementation that does not exist | Speculative generality | Call the one you have |
+| Hardening, failover, multi-region, key management | Production concerns | Note them for graduation |
+| Schema migrations, versioned APIs | Compatibility with a future that may not happen | Rewrite freely |
+| Configuration layers and plugin systems | Flexibility nobody is using yet | Hardcode, note it as debt |
+
+Report drift as an observation, not a violation, and quantify it from the log: "three of the
+last ten commits touched deployment plumbing" lands better than "there is scope creep". Also
+check the reverse drift: recent commits that no longer touch the question's subject at all.
 
 ## Step 7 — Report
 
@@ -145,10 +141,35 @@ Recommendation rules, applied in order:
 3. Time box spent and the signal is `UNMEASURED` → **KILL**. The bet was time, and it is
    spent. If the user wants to continue, that is a new POC with a new contract and a new
    box — which is a decision someone makes deliberately, not a default.
-4. Within the box, signal `UNMEASURED`, no criterion met → **EXTEND**, and name the specific
-   measurement that would settle it.
+4. Within the box, signal `UNMEASURED` or `NOT MET`, no criterion met → **EXTEND**, and name
+   the specific measurement that would settle it (for `NOT MET`, what would have to change for
+   the signal to be met inside the remaining days).
 
 Give the recommendation straight. A POC's whole value is that someone was willing to hear
 "no" cheaply; softening the verdict destroys that value.
 
 This skill changes nothing. To act on the recommendation, run `poc-graduate`.
+
+## Calibration examples
+
+<example>
+Contract: kill criterion "p95 extraction latency above 2 s on the 200-invoice sample". Evidence:
+`{"criterion": "latency", "observation": "p95 3.4 s", "source": "bench/run-2.json"}`.
+Verdict: that criterion `MET`, cited to `bench/run-2.json`. Recommendation `KILL`, naming the
+criterion, even though the success signal (field accuracy ≥ 95 %) is also `MET`: rule 1 wins.
+</example>
+
+<example>
+Contract: success signal "95 % field accuracy". Evidence array empty; the repo has a working
+pipeline and a README claiming "accuracy looks great". Verdict: success signal `UNMEASURED`
+(the README is an opinion, not evidence), every kill criterion `UNMEASURED`, the empty evidence
+trail reported first. Within the box → `EXTEND`, naming the measurement: run the 200-invoice
+sample and record accuracy with its source.
+</example>
+
+<example>
+Contract ends 2026-03-01; today is 2026-03-09; accuracy evidence shows 91 % against a 95 %
+threshold. Verdict: time box 8 days past, so the time-box kill criterion is `MET`; success signal
+`NOT MET` with the measured value shown. Recommendation `KILL`; a user who wants to continue
+writes a new contract with a new box.
+</example>

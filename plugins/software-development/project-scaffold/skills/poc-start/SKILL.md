@@ -1,12 +1,10 @@
 ---
 name: poc-start
+description: "Writes a proof-of-concept contract (yes/no question, success signal, kill criteria, time box) to .poc/poc.json, then scaffolds the minimum. Use when starting a spike or time-boxed experiment. Not for a real project (use project-new); not when .poc/ already exists (use poc-validate)."
+when_to_use: "start a POC, proof of concept, time-boxed experiment, is this feasible, kill criteria"
+argument-hint: "[poc-name]"
+allowed-tools: Read, Glob, Bash(pwd), Bash(date -u *), Edit(./**), AskUserQuestion
 license: MIT
-description: Frame a proof of concept before any code is written — the one question it answers, the falsifiable signal that would count as success, the kill criteria that end it, the time box, and the target runtime it would graduate onto. Writes .poc/poc.json plus a POC CLAUDE.md that keeps the work honest, then scaffolds only the minimum the author's chosen stack needs. Use when starting an experiment, spiking a risky idea, or being asked whether something is feasible. Not for a production repo, and not for a directory that already has a .poc/.
-when_to_use: start a POC, proof of concept, spike, experiment, prototype, is this feasible, time-boxed investigation, kill criteria
-user-invocable: true
-context: fork
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(mkdir:*), Bash(ls:*), Bash(find:*), Bash(date:*), Bash(pwd:*), Bash(test:*), Task, AskUserQuestion
-argument-hint: "<poc-name>"
 ---
 
 # Start a Proof of Concept
@@ -18,22 +16,14 @@ This skill writes the contract first. Scaffolding is the last step and deliberat
 
 ## Step 1 — Look first, and refuse to double-start
 
-Run these and work from the output:
+POC name from the invocation: `$ARGUMENTS` (empty → ask for one in Step 2).
 
-```bash
-pwd
-test -d .poc && echo "yes — stop" || echo no
-ls -A 2>/dev/null | head -20
-date -u +%Y-%m-%d
-```
+Run `pwd` and `date -u +%Y-%m-%d`, and Glob `*`, `.*` and `.poc/*`. Today's date becomes
+`time_box.started` in Step 3.
 
-In order: the current directory, whether a POC already exists here, what the directory holds,
-and today's date — which becomes `time_box.started` in Step 3 and anchors the end date agreed
-in Step 2.
-
-If you cannot run commands here — a surface with no shell — ask the user to paste the output,
-today's date included, and wait for it. Never invent the date a time box starts, and never
-scaffold into a directory you have not listed.
+**Without a checkout (web/Cowork):** ask the user for today's date and a listing of the
+directory, and wait. Run Step 2 as normal; in Steps 3-5 present the file contents for the user
+to save. Never invent the date a time box starts.
 
 If `.poc/` already exists, stop. Tell the user:
 
@@ -84,10 +74,6 @@ no particular vendor or platform is assumed.
 
 ## Step 3 — Write `.poc/poc.json`
 
-```bash
-mkdir -p .poc
-```
-
 ```json
 {
   "poc_active": true,
@@ -110,8 +96,8 @@ mkdir -p .poc
 `evidence` starts empty and is appended to as the work produces measurements. Each entry:
 `{ "date": "...", "criterion": "<which criterion or signal it bears on>", "observation": "...", "source": "<file, log, or command>" }`.
 
-Tell the user plainly: **an empty `evidence` array at validation time means the POC answered
-nothing**, regardless of how much code exists.
+Tell the user plainly: an empty `evidence` array at validation time means the POC answered
+nothing, regardless of how much code exists.
 
 ## Step 4 — Write the POC CLAUDE.md
 
@@ -150,13 +136,8 @@ that is itself a finding — record it in `.poc/poc.json` evidence and raise it.
 
 ## Step 5 — Scaffold the minimum
 
-Create only what the chosen stack needs to run and produce a measurement:
-
-```bash
-mkdir -p src tests
-```
-
-Add the manifest or dependency file for the chosen language, a `.gitignore` appropriate to
+Create only what the chosen stack needs to run and produce a measurement: a `src/` entry point,
+the manifest or dependency file for the chosen language, a `.gitignore` appropriate to
 it, and whatever local runtime definition the user named. Nothing else. No CI configuration,
 no deployment definitions, no multi-service topology, no abstraction layers for a second
 implementation that does not exist yet.
@@ -165,7 +146,13 @@ If the user asks for one of those, point at the out-of-scope list they just wrot
 
 Do not run git commands. Tell the user what to commit and let them commit it.
 
-## Step 6 — Report
+## Step 6 — Verify
+
+Read `.poc/poc.json` back. It parses as JSON, `poc_active` is `true`, no `<placeholder>` remains,
+`time_box.ends` is after `time_box.started`, and the time-box kill criterion names the end date.
+Fix and re-read on any mismatch.
+
+## Step 7 — Report
 
 Print the contract back: question, success signal, kill criteria, time box end date, stack,
 target runtime, and the files created. Then state the next step — build, record evidence as

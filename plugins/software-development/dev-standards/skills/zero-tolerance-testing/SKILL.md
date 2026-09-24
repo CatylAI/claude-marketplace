@@ -1,116 +1,92 @@
 ---
 name: zero-tolerance-testing
+description: "Use before declaring a task complete or opening a pull request, and whenever a check fails. The done-gate: every test, linter, formatter and hook passes with zero errors and zero warnings, with no suppression or bypass. Not for test structure (use test-structure)."
 license: MIT
-description: The policy that every test, linter, formatter and pre-commit hook must pass with zero errors and zero warnings before work is called done, plus the list of bypasses that are never acceptable. Use before declaring a task complete, opening a pull request, or when tempted to skip a failing check.
 ---
 
-# Zero-Tolerance Test and Lint Policy
+# Zero-tolerance done-gate
 
-## Core rule
+Work is done when every check the repo runs passes with zero errors and zero warnings, and nothing
+was suppressed to get there. A suppressed check is worse than a failing one: the failure tells you
+something is wrong, the suppression looks healthy while telling you nothing.
 
-Every test, linter, formatter and pre-commit hook must pass with zero errors and zero
-warnings before work is declared complete. No exceptions, no "I will fix it in a
-follow-up", no green-by-suppression.
+## The gate
 
-A suppressed check is worse than a failing one: the failing check tells you something is
-wrong, the suppressed one tells you nothing while looking healthy.
+1. Read the CI pipeline definition to find the authoritative list of checks. Every check CI runs
+   belongs in the local gate.
+2. Run each one: the hook runner over all files, lint, format check, typecheck, unit tests, and
+   integration tests where they exist.
+3. Fix what fails, then rerun the whole gate, not only the check that failed, since a fix often
+   breaks a neighbour. Repeat until every check exits 0 with no warnings.
+4. Fix pre-existing failures too. When one is genuinely out of scope, fix it anyway or stop and tell
+   the user, naming the check; leaving a red check for the next person is how suites rot.
 
-## What this looks like in practice
+If a check cannot run (tool missing, service unavailable, permission denied), report it as not run,
+with the reason. Never report a check you did not run as passing.
 
-**A lint warning is a finding, not noise.**
+## Bypasses that do not count as passing
 
-```
-src/handlers/user.py:34:5: F841 Local variable `result` is assigned but never used
+| Bypass | Why it fails the gate |
+| --- | --- |
+| `git commit --no-verify` | Skips every hook at once |
+| A skip or `xfail` marker added to get green | Hides a broken test |
+| Commenting out or loosening an assertion | Leaves a test that cannot fail |
+| Lowering a coverage or lint threshold | Moves the floor instead of meeting it |
+| `--disable-warnings`, `-W ignore` | Hides the warnings the gate counts |
+| `continue-on-error`, `allow_failure` in CI | Makes the failure invisible |
+| <code>\|\| true</code> on a gate command | Masks a non-zero exit |
+| Bare `# noqa`, `# type: ignore`, `eslint-disable` with no rule and no reason | Silences everything on the line |
+| Renaming an unused result to `_` without asking why it is unused | Often hides a dropped error |
 
-Wrong:  add `# noqa: F841`
-Right:  remove the variable, or use the value — an assigned-and-ignored result
-        is usually a dropped error or a forgotten branch
-```
+## When a suppression is legitimate
 
-**A broken test gets fixed, not skipped.**
+A genuine false positive may be suppressed once you have read the rule's documentation and
+confirmed the finding is wrong. Suppress that one rule code, at the narrowest scope, with the reason
+on the same line:
 
 ```python
-# Wrong
-@pytest.mark.skip(reason="flaky in CI")
-def test_order_total_with_discount():
-    assert calculate_total(100, discount=0.1) == 90.0
-
-# Right — leave it running and fix calculate_total() until it passes
-def test_order_total_with_discount():
-    assert calculate_total(100, discount=0.1) == 90.0
+data = pickle.loads(blob)  # noqa: S301 -- blob is produced by our own signed cache writer
 ```
 
-"Flaky" is a diagnosis nobody made. Either the test has a real race, in which case fix
-the race, or the code under test is nondeterministic, in which case that is the bug.
+When a formatter and a linter fight over the same lines, keep one authoritative formatter per
+language and disable the conflicting lint rules, rather than suppressing line by line.
 
-**A hook failure means fix the input, not the hook.**
+<example>
+Lint output: `src/handlers/user.py:34:5: F841 Local variable `result` is assigned to but never used`
 
-```
-commit message: "added search feature"
-error: commit message does not follow conventional commits format
+Not a fix: adding `# noqa: F841`.
+The fix: read why the result is unused. It is usually a dropped error or a forgotten branch; use the
+value, or remove the call if it truly has no effect.
+</example>
 
-Wrong:  git commit --no-verify -m "added search feature"
-Right:  git commit -m "feat(PROJ-123): add search filter for the user list"
-```
+<example>
+A test fails intermittently in CI, and the tempting change is `@pytest.mark.skip(reason="flaky")`.
 
-## Verification
+The fix: find the nondeterminism. Either the test has a race (fix the test) or the code under test
+is nondeterministic (that is the bug). Slow tests get faster (parallelize, replace sleeps with
+condition waits, move integration work out of the unit tier), not skipped.
+</example>
 
-Run the project's full gate before claiming completion. The command names vary; the
-requirement does not — each must exit 0:
+<example>
+The commit-msg hook rejects "added search feature".
 
-```
-<the repo's pre-commit / hook runner>   all hooks pass
-<lint command>                          zero warnings
-<format check command>                  zero violations
-<unit test command>                     zero failures
-<integration test command>              zero failures, where one exists
-```
+The fix: rewrite the message to the repo's format (see `commit-standards`) and commit again with the
+hook running.
+</example>
 
-Read the CI pipeline definition to find the authoritative list. If a check runs in CI,
-it belongs in your local gate.
+## Verify
 
-## Prohibited bypasses
-
-| Action | Why it is prohibited |
-| --- | --- |
-| `--disable-warnings` | Hides real problems |
-| `# type: ignore` with no explanation | Silences the type checker permanently |
-| `--no-verify` on a commit | Skips every safety gate at once |
-| Skip markers added to make CI pass | Hides a broken test |
-| Commenting out assertions | Leaves a test that cannot fail |
-| Lowering a coverage threshold | Moves the floor instead of meeting it |
-| `allow_failure` / `continue-on-error` in CI | Makes failures invisible |
-| <code>\|\| true</code> appended to a command | Masks a real non-zero exit |
-| A bare `# noqa` with no rule code | Blanket suppression of everything on that line |
-| Renaming an unused variable to `_` reflexively | May be hiding a real bug |
-
-## Handling the awkward cases
-
-**A pre-existing failure you did not cause.** Fix it now. If it is genuinely out of scope,
-open a tracking issue *and* fix it anyway — leaving a red check for the next person is how
-suites rot.
-
-**Fixing one thing breaks another.** Fix the cascade. Re-run the whole suite after each
-round. Repeat until everything is green; do not stop at "my part passes".
-
-**A genuine linter false positive.** Verify it is truly false — read the rule's
-documentation, not just its name. Then disable that *specific* rule code at the narrowest
-scope possible, with a comment saying why. Never disable a whole category.
-
-**Formatter and linter disagree.** Pick one authoritative formatter per language and
-remove the other. Two formatters fighting produces an infinite diff.
-
-**Tests are too slow.** Make them faster: parallelize, fail fast, replace a sleep with a
-condition wait, move integration work out of the unit lane. Never skip them for speed.
-
-## Session close checklist
+Before saying the work is done, state the result of each gate check:
 
 ```
-[ ] hook runner            -> all passed
-[ ] lint                   -> zero warnings
-[ ] format check           -> zero violations
-[ ] unit tests             -> all passed
-[ ] integration tests      -> all passed (or none exist)
-[ ] no tests skipped or disabled in this change
-[ ] no new suppression comment without a written justification
+hooks (all files)   passed | failed | not run: <reason>
+lint                passed | ...
+format check        passed | ...
+typecheck           passed | ...
+unit tests          passed | ...
+integration tests   passed | ... | none exist
+new skips or suppressions in this change: none | <list, each with its written reason>
 ```
+
+Without a checkout (web), you cannot run the gate: review pasted output against the table above and
+tell the user which checks still need running.

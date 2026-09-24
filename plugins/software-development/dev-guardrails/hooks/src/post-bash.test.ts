@@ -136,3 +136,16 @@ describe('evaluateBashOutput — the notice is honest about what redaction buys'
     assert.match(notice, /\$\{VAR:\+set\}/);
   });
 });
+
+describe('evaluateBashOutput — a placeholder elsewhere does not switch redaction off', () => {
+  it('redacts a live secret that shares the output with an earlier placeholder', () => {
+    // The idempotence guard used to return early whenever ANY placeholder was present, so
+    // output quoting an old redaction (a transcript, a log) carried a fresh secret through.
+    const earlier = evaluateBashOutput(bash(`old ${PAT}`));
+    assert.ok(earlier.updated);
+    const mixed = `${earlier.updated.stdout}\nnew ${AWS}`;
+    const { updated } = evaluateBashOutput(bash(mixed));
+    assert.ok(updated, 'the new secret must still be redacted');
+    assert.ok(!updated.stdout.includes(AWS));
+  });
+});

@@ -42,13 +42,12 @@
 # Checks ADDED, each grounded in this repo:
 #
 #   * `tool_result` read as a hook-input field. The real field is `tool_response`
-#     (dev-guardrails hooks/src/lib/types.ts, restated in post-agent.ts:253 and
-#     post-mcp-tool.ts:162). Reading the wrong one "yields undefined forever while looking
-#     like it works" — which is precisely a defect a static check can catch and a test
-#     usually cannot.
+#     (dev-guardrails hooks/src/lib/types.ts, restated in post-mcp-tool.ts). Reading the
+#     wrong one "yields undefined forever while looking like it works" — which is precisely
+#     a defect a static check can catch and a test usually cannot.
 #   * a machine-local home directory anywhere in the source.
 #   * non-portable shebang (`#!/bin/bash`, `#!/usr/bin/bash`), matching the rule
-#     dev-guardrails' own pre-write-edit.ts enforces on every shell script written here.
+#     dev-guardrails' post-write-edit.ts reports on every shell script written here.
 #   * `eval` / `bash -c` on interpolated text.
 #   * an external CLI invoked with no `command -v` guard — review-hooks Lens 4, made
 #     mechanical: "a hook that fails because a tool is not installed blocks work for a

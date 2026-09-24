@@ -1,22 +1,8 @@
-// Shared regex patterns used by the Bash PreToolUse guard.
+// Shared regex patterns: commit-message shape, and advisory smells for the write hooks.
 
-// --- forge CLIs -------------------------------------------------------------------
-// Matched on the SUBCOMMAND as well as the binary, so a directory named `gh` or a
-// variable assignment never counts as an invocation.
-export const GH_CLI = /(^|[;&|]\s*)gh\s+(pr|issue|api|repo|release|run|workflow|auth|config|gist|label|project|ssh-key|status|variable|secret|codespace|extension|gpg-key|search|cache|ruleset|attestation)/;
-export const GLAB_CLI = /(^|[;&|]\s*)glab\s+(mr|issue|api|repo|release|ci|pipeline|auth|config|label|snippet|variable|schedule|cluster|incident|iteration|token|user|alias|changelog|ask|job|stack)/;
-
-// `--body` is the GitHub CLI's flag and `--description` is the GitLab CLI's. Each is an
-// error on the other tool, and the error surfaces late — after a branch is pushed. The
-// guard matches them per command segment (see evaluateForgePolicy), not with a regex over
-// the whole line, so a compound command cannot cross-blame one CLI for the other's flag.
-
-// --- git ---------------------------------------------------------------------------
-export const GIT_COMMIT = /(^|[;&|]\s*)git\s+commit/;
-export const GIT_COMMAND = /(^|[;&|]\s*)git\s+/;
-
-// --- terraform ----------------------------------------------------------------------
-export const TERRAFORM_INIT = /(^|[;&|]\s*)terraform\s+init\b/;
+// The Bash gates match commands on parsed argv (lib/bash-parse.ts), not on regexes over the
+// raw line, so the forge, git and terraform command regexes that used to live here are gone:
+// each one missed `git -C x push`, `sudo …`, and `bash -c '…'`.
 
 // --- conventional commits -------------------------------------------------------------
 export const CONVENTIONAL_COMMIT = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_/-]+\))?!?:\s.+/;

@@ -1,112 +1,117 @@
 ---
 name: review-scan
-description: "Run the deterministic, ZERO-TOKEN detection pass over a git diff: ruff, bandit, mypy, pylint, shellcheck, gitleaks and trivy, plus dependency-pinning, commented-out-code and changed-symbol-consumer checks, over only the files a branch changed — then normalise every tool's JSON into one AgentContract at .code-review/SCAN.json with findings hunk-filtered to changed lines. Also writes SCAN-SUMMARY.md with counts by tool and severity and an explicit SKIPPED list, so a missing linter is visible rather than silently absent. Use before any semantic review pass to catch mechanically-detectable defects without spending tokens on them, standalone to see what the linters say about a branch, or as a CI job whose artifact a later review consumes. NOT the whole review — it cannot judge business logic, authorization or design, which is the semantic pass. NOT a gate: it reports, it does not enforce."
+description: "Runs the deterministic linter and secret-scan pass, with no model tokens, over the files a branch changed. It writes diff-scoped findings to .code-review/SCAN.json and a summary that lists every skipped tool. Use when asked what the linters say about a branch, before a judgement review, or as a CI step whose output a later review reads. Not a full review or a gate (use review, or /code-review for a quick pass). Claude Code only: needs a git checkout and a shell."
+argument-hint: "[base-ref] [--detectors a,b]"
+allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/pipeline/review-scan.sh" *), Bash(python3 -m json.tool */.code-review/SCAN.json), Bash(git symbolic-ref *), Bash(git rev-parse *), Read, Grep, Glob
+disallowed-tools: Write, Edit, NotebookEdit
 license: MIT
-user-invocable: true
-argument-hint: "[--base <ref>] [--detectors a,b]"
-allowed-tools: Bash(git:*), Bash(python3:*), Bash(bash:*), Read, Grep, Glob
 ---
 
-# review-scan — deterministic detection, zero tokens
+# review-scan
 
-Static analysis finds mechanically-detectable defects better and cheaper than an LLM reading files.
-`bandit` finds the hardcoded password, the `subprocess(shell=True)` and the partial executable path;
-`ruff` finds the bare `except`; `gitleaks` and `trivy` find the committed key. Each comes back with a
-rule ID, a severity and a doc URL. Paying several agents at `maxTurns: 80` to hand-grep for the same
-patterns costs real money and finds less.
+Arguments: `$ARGUMENTS`
 
-So this skill does the detection, and Claude does the part no linter can: business logic,
-authorization, tenancy, concurrency, and design.
+Linters and secret scanners find grep-shaped defects better and cheaper than a model reading files.
+This skill runs them over the changed files only and leaves business logic, authorization and design
+to the `review` pipeline.
 
 ## Run it
 
+Take the first argument that does not start with `--` as the base ref, and pass any other flags
+through. With no base, use the first of these that resolves: `git symbolic-ref --short
+refs/remotes/origin/HEAD`, then `git rev-parse --verify --quiet origin/main`, then `origin/master`.
+If none resolves, ask the user for one. Write the ref literally into the command, because shell
+variables do not persist between calls:
+
 ```bash
-# The script is the whole interface. Same invocation locally and in CI — deliberately.
-"$CLAUDE_PLUGIN_ROOT/pipeline/review-scan.sh" --base origin/main
+bash "${CLAUDE_PLUGIN_ROOT}/pipeline/review-scan.sh" --base <base> [--detectors a,b]
 ```
+
+It is the same invocation locally and in CI. The script writes to `<root>/.code-review/`, where
+`<root>` is the output of `git rev-parse --show-toplevel`, whatever directory the session started in;
+read the outputs there.
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--base <ref>` | **required** | merge base. `origin/main` locally, a CI-supplied base SHA in CI |
+| `--base <ref>` | required by the script | merge base: `origin/main` locally, a CI-supplied base SHA in CI |
 | `--source <ref>` | `HEAD` | the branch under review |
-| `--out <dir>` | `.code-review` | shares the workspace the rest of the review pipeline uses |
-| `--detectors a,b` | chosen from the changed files | `python`, `shell`, `terraform`, `deps`, `comments`, `secrets`, `impact` |
-| `--max-findings N` | `150` | truncates lowest-severity-first, and records that it did |
-| `--fail-under N` | from `pyproject.toml` / `setup.cfg` / `.coveragerc` | coverage gate |
-| `--quiet` | off | suppress progress on stderr |
+| `--out <dir>` | `.code-review` | the workspace the rest of the pipeline reads |
+| `--detectors a,b` | chosen from the changed files | `python`, `shell`, `terraform`, `iac-policy`, `deps`, `comments`, `secrets`, `impact` |
+| `--max-findings N` | `150` | truncates lowest severity first, and records that it did |
+| `--fail-under N` | from `pyproject.toml` / `setup.cfg` / `.coveragerc` | coverage threshold |
+| `--quiet` | off | suppresses progress on stderr |
 
-Outputs, all under `--out`:
+Exit status is 0 whenever the scan completed, whatever it found. Findings are reported, not
+enforced, so a linter missing from a runner image cannot fail a pipeline. A non-zero exit means the
+scan itself could not run (bad ref, not a git repository). Report the stderr line and stop.
+
+## Outputs
+
+All under `--out`:
 
 | File | Contents |
 | --- | --- |
-| `SCAN.json` | the `AgentContract` — **this is what a reviewer reads** |
-| `SCAN.raw.json` | the same before diff-scoping; useful when a finding you expected is missing |
+| `SCAN.json` | the findings, in the shape defined by `${CLAUDE_PLUGIN_ROOT}/pipeline/schemas/agent-contract.schema.json`. This is what a reviewer reads |
+| `SCAN.raw.json` | the same before diff scoping; check it when an expected finding is missing |
 | `SCAN-SUMMARY.md` | counts by tool and severity, and the `SKIPPED:` list |
-| `raw/<tool>.json` | each tool's native output, kept for debugging and as a CI artifact |
+| `raw/<tool>.json` | each tool's native output |
 | `raw/<tool>.skipped` | one line saying why a tool did not run |
 
-**Exit status is 0 whenever the scan completed, whatever it found.** Findings are reported, not
-enforced. A scan that failed a pipeline because a linter is missing from the runner image would be
-worse than no scan at all.
+Each finding carries `severity` (`BLOCKER`, `MAJOR`, `MINOR`, `NIT`), `in_diff` (`true`/`false`) and
+`confidence` (`HIGH`, `MEDIUM`, `LOW`), plus `id`, `category`, `location`, `title`, `evidence`,
+`recommendation` and `ux_impact`.
 
 ## Reading the output
 
-Three properties of `SCAN.json` matter when you triage it:
+1. **Findings are on changed lines.** `pipeline/filter-carried-findings.py` keeps only findings on
+   the new side of the diff's `@@` hunks, so existing lint debt stays out. If
+   `scan_meta.diff_scoped` is `false`, the filter did not run and you are looking at unfiltered
+   debt. Say so.
+2. **Skipped tools matter as much as findings.** A scan with half its tools missing looks like a
+   clean scan unless the gaps are stated. Report "scanned with k of n tools" from
+   `scan_meta.tools_run` and `scan_meta.tools_skipped`.
+3. **Some tools supply no severity.** Their findings default to `MINOR`, recorded in
+   `scan_meta.notes`. Judge those on the rule, not the severity.
 
-1. **Findings are on changed lines.** Everything is piped through
-   `pipeline/filter-carried-findings.py`, which intersects each cited line against the new-side `@@`
-   hunks of the real diff, so a repo's pre-existing lint debt does not reach you. Check
-   `scan_meta.diff_scoped`; if it is `false`, the filter did not run and you are looking at
-   unfiltered debt.
-2. **`SKIPPED` is as important as the findings.** A scan with four of six tools present looks exactly
-   like a clean scan unless the gaps are stated. `scan_meta.tools_skipped` and the summary's
-   "Coverage gaps" section name every one, with a reason. A verdict should say "scanned with 4 of 6
-   detectors", never imply the whole diff was covered.
-3. **Severity comes from the tool, and some tools cannot supply it.** A tool reporting
-   `severity: null` has its findings defaulted to `MINOR` regardless of real risk — recorded in
-   `scan_meta.notes`. Judge those findings on the rule, not the severity.
-
-## What each detector covers
+## Detectors
 
 | Detector | Tools | Notes |
 | --- | --- | --- |
-| `python` | ruff, bandit, mypy, pylint | ingests `raw/pytest.json` + `raw/coverage.json` if CI drops them in; does not run the suite itself |
-| `shell` | shellcheck | `.sh`/`.bash`/`.zsh` plus extensionless files whose first line is a shell shebang |
-| `terraform` | terraform fmt, tflint, checkov, tfsec | `.tf`/`.tfvars`/`.hcl`. `terraform validate` is never run: it needs `init`, and the scan authenticates nowhere |
-| `secrets` | gitleaks, trivy | always runs when anything changed; both always `--redact` |
-| `deps` | its own | unpinned dependencies in `package.json`, `requirements*.txt`, `pyproject.toml`, `Dockerfile`, `.github/workflows/*`, `.pre-commit-config.yaml` — an action on a tag or a `:latest` base is MAJOR, a caret range beside a lock file is a NIT |
-| `comments` | its own | blocks of commented-out code, and `TODO`/`FIXME`/`XXX` with no issue reference — both NIT, both a shortlist for a human |
-| `impact` | git grep | removed/renamed/signature-changed symbols → consumers outside the diff, as NIT |
+| `python` | ruff, bandit, mypy, pylint | ingests `raw/pytest.json` and `raw/coverage.json` if CI drops them in; never runs the suite |
+| `shell` | shellcheck | `.sh`/`.bash`/`.zsh`, plus extensionless files with a shell shebang |
+| `terraform` | terraform fmt, tflint, checkov, tfsec | `.tf`/`.tfvars`/`.hcl`; `terraform validate` is never run because it needs `init` |
+| `secrets` | gitleaks, trivy | runs whenever anything changed; gitleaks runs with `--redact`, trivy masks secret values itself |
+| `deps` | built in | unpinned dependencies; an action on a tag or a `:latest` base is MAJOR, a caret range beside a lock file is a NIT |
+| `comments` | built in | commented-out code blocks, and `TODO`/`FIXME`/`XXX` with no issue reference; both NIT |
+| `iac-policy` | built in | Terraform, CI pipelines, Makefiles and `.sql` migrations: `-target` in automation, `dynamodb_table` locking, environment-variable defaults, undocumented variables, OIDC trust without `:sub`, `StringLike` without a wildcard, `iam:PassRole` on `"*"`, non-concurrent `CREATE INDEX`; never BLOCKER |
+| `impact` | git grep | removed, renamed or re-signatured symbols with consumers outside the diff; NIT |
 
-A detector named in `--detectors` that is not bundled is recorded as an explicit skip and the scan
-continues. **TS/JS is thin**: neither `semgrep` nor `eslint` is assumed installed and `tsc` needs the
-project's `node_modules`, so TS/JS files get `secrets` + `impact` only. The scan records that as a
-skip rather than pretending the stack was covered.
+That is 7 detectors over 11 external tools, plus `git grep` and two built-in checks. A detector named in `--detectors` that is not
+bundled is recorded as a skip. TS/JS files get `secrets` and `impact` only, and the scan records that
+as a skip too.
 
-## Feeding it test and coverage results
+### Test and coverage input
 
-`detectors/python.sh` ingests two files if they are already on disk; it never runs the suite itself.
-Mind the two shapes:
+`detectors/python.sh` reads two files if CI has already written them:
 
-- `raw/coverage.json` is coverage.py's own `{totals: {percent_covered}, files: {…}}`, which
-  `--cov-report=json` produces directly.
-- `raw/pytest.json` is **this scanner's own summary**, `{failed: [{nodeid, file, line, message}],
-  rc: int}` — not any plugin's schema. Derive it from a JUnit XML report with the standard library;
-  no pytest plugin is needed.
+- `raw/coverage.json`: coverage.py's own JSON, as `--cov-report=json` writes it.
+- `raw/pytest.json`: this scanner's own summary, `{failed: [{nodeid, file, line, message}], rc: int}`.
+  Derive it from a JUnit XML report with the standard library.
 
-Emit both from the job that already has the project environment and the services, and publish them
-as artifacts a later review consumes.
+## Verify
 
-## Where the real findings come from
+```bash
+python3 -m json.tool <root>/.code-review/SCAN.json
+```
 
-Measured across benchmark diffs in repos that already ran the same linters at pre-commit time, the
-diff-scoped yield of this scan was near zero — because those gates had already passed and their
-findings were already fixed. That does not refute the premise that a linter beats an LLM at
-grep-shaped detection; it shows the saving was banked earlier. The division that follows:
+If it parses, read `SCAN-SUMMARY.md` and report:
+- the finding counts by severity
+- whether `diff_scoped` is true
+- which tools were skipped, and why
 
-| Layer | Owns | Why |
-| --- | --- | --- |
-| pre-commit | ruff, pylint, shellcheck, gitleaks, trivy | already installed, already blocking, runs before the commit exists |
-| CI | pytest + coverage JSON, published as artifacts | needs the project env and services; neither pre-commit nor an agent can do it |
-| `review-scan.sh` | mypy, impact, plus ingest of CI's artifacts | the detectors not enforced upstream |
-| `review-semantic` | the judgement lenses | where essentially all the real findings come from |
+If it does not parse, report that the scan did not complete and quote the script's stderr.
+
+## Without a checkout
+
+The scan needs a git repository and a shell. If neither is available, say so. For a pasted diff,
+offer `/code-review` instead, and do not present a model reading as a linter result.

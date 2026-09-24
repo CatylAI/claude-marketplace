@@ -8,27 +8,27 @@
   },
   "metadata": {
     "description": "CatylAI business plugins for Claude Code: hiring, sales, marketing, software development, customer support, finance, IT operations and project management.",
-    "version": "0.3.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "claude-craft",
       "source": "./plugins/software-development/claude-craft",
-      "description": "Architecture guidance for building Claude Agent SDK systems: loop control, orchestration, tool design and context economy, plus configuration audits and multi-worktree release workflows.",
-      "version": "0.4.0",
+      "description": "Design rules for systems built on the Claude API and Agent SDK (loop control, orchestration, tool interfaces, context economy, output contracts, enforcement, MCP, provenance, skill and plugin authoring), plus audits of skills, agents, hooks and whole Claude Code configurations.",
+      "version": "0.5.2",
       "keywords": [
-        "claude",
         "agent-sdk",
+        "architecture",
         "authoring",
-        "architecture"
+        "config-audit"
       ],
       "category": "software-development"
     },
     {
       "name": "code-review-core",
       "source": "./plugins/software-development/code-review-core",
-      "description": "Forge-neutral code review: deterministic detectors find issues, bounded agents judge them, a validation pass owns the verdict.",
-      "version": "0.3.1",
+      "description": "Git-diff code review with a machine-readable verdict: linters scan the changed lines, gated agents judge what linters cannot, and a validator plus a deterministic finalize step produce .code-review/VALIDATED.json. Posts nothing; pair with github-workflow or gitlab-workflow to publish.",
+      "version": "0.5.0",
       "keywords": [
         "code-review",
         "static-analysis",
@@ -54,7 +54,7 @@
       "name": "dependency-upgrades",
       "source": "./plugins/software-development/dependency-upgrades",
       "description": "Cross-language dependency and runtime upgrades bounded by the deployment ceiling, gated on test adequacy, ranked by support status, one change per commit.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "keywords": [
         "dependencies",
         "upgrades",
@@ -67,21 +67,36 @@
     {
       "name": "dev-guardrails",
       "source": "./plugins/software-development/dev-guardrails",
-      "description": "Hooks that block unsafe shell and edit operations in flight: secret leaks, destructive git, and non-conventional commits.",
-      "version": "0.4.1",
+      "description": "Hooks that block unsafe shell and edit operations in flight (secret leaks, destructive git, non-conventional commits), plus a force-push-free sync for worktrees that fall behind their base branch.",
+      "version": "0.6.3",
       "keywords": [
         "hooks",
         "safety",
         "secrets",
-        "git"
+        "git",
+        "worktrees"
+      ],
+      "category": "software-development"
+    },
+    {
+      "name": "dev-mcp-servers",
+      "source": "./plugins/software-development/dev-mcp-servers",
+      "description": "Standard MCP servers for development work, starting with Playwright for driving a real browser. Claude Code only.",
+      "version": "0.1.0",
+      "keywords": [
+        "mcp",
+        "playwright",
+        "browser",
+        "frontend",
+        "testing"
       ],
       "category": "software-development"
     },
     {
       "name": "dev-standards",
       "source": "./plugins/software-development/dev-standards",
-      "description": "Vendor-neutral engineering standards: agent contracts, code review rubric, commit conventions and testing discipline.",
-      "version": "0.4.0",
+      "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions.",
+      "version": "0.6.0",
       "keywords": [
         "standards",
         "code-review",
@@ -93,13 +108,14 @@
     {
       "name": "engineering-workflows",
       "source": "./plugins/software-development/engineering-workflows",
-      "description": "Engineering workflows: architecture decision records, code review checklists, release notes and design docs.",
-      "version": "0.1.0",
+      "description": "Everyday engineering workflows: root-cause debugging with a read-only debugger agent, design intake and implementation plans, multi-worktree release trains, repository walkthroughs and session handoffs.",
+      "version": "0.2.1",
       "keywords": [
         "engineering",
-        "adr",
-        "code-review",
-        "typescript"
+        "debugging",
+        "design",
+        "planning",
+        "worktrees"
       ],
       "category": "software-development"
     },
@@ -148,7 +164,7 @@
       "name": "github-workflow",
       "source": "./plugins/software-development/github-workflow",
       "description": "GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.",
-      "version": "0.1.2",
+      "version": "0.2.1",
       "keywords": [
         "github",
         "pull-request",
@@ -162,7 +178,7 @@
       "name": "gitlab-workflow",
       "source": "./plugins/software-development/gitlab-workflow",
       "description": "GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "keywords": [
         "gitlab",
         "merge-request",
@@ -242,8 +258,8 @@
     {
       "name": "project-scaffold",
       "source": "./plugins/software-development/project-scaffold",
-      "description": "Bootstrap a new project and run a proof of concept: repo layout, ADR adoption, and a POC lifecycle that graduates or kills on evidence.",
-      "version": "0.2.1",
+      "description": "Bootstrap a new project and run a proof of concept: repo layout, ADR adoption with a read-only ADR currency gate, and a POC lifecycle that graduates or kills on evidence.",
+      "version": "0.4.0",
       "keywords": [
         "scaffolding",
         "adr",
@@ -294,8 +310,8 @@
     {
       "name": "snowflake-connector",
       "source": "./plugins/software-development/snowflake-connector",
-      "description": "Bring-your-own-account Snowflake connector: a setup wizard for account identifier, auth method and role, plus the cost-aware discipline for querying a warehouse safely.",
-      "version": "0.1.0",
+      "description": "Connect Claude Code to your own Snowflake account with a read-only service role, via Snowflake's managed MCP server or the snow CLI, and query it with cost-bounded, verified SQL.",
+      "version": "0.2.0",
       "keywords": [
         "snowflake",
         "sql",
@@ -321,14 +337,13 @@
     {
       "name": "terraform-aws",
       "source": "./plugins/software-development/terraform-aws",
-      "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC federation from CI, zero-downtime database migrations, and the judgement half of an IaC review.",
-      "version": "0.1.0",
+      "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC trust for GitHub and GitLab CI, and the judgement half of a Terraform plan review.",
+      "version": "0.2.0",
       "keywords": [
         "terraform",
         "aws",
         "iam",
-        "infrastructure",
-        "migrations"
+        "infrastructure"
       ],
       "category": "software-development"
     }

@@ -53,6 +53,10 @@ export interface HookInput {
   permission_mode?: string;
   cwd?: string;
   message?: string;
+  /** The failure text, on PostToolUseFailure. Its format varies by tool; not a stable format. */
+  error?: string;
+  /** Identifies one tool call; the same on its Pre and Post events. */
+  tool_use_id?: string;
 }
 
 /**

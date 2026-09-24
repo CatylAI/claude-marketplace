@@ -159,13 +159,22 @@ else
   fail "'Notebook.Edit' should warn about the literal/regex switch and still pass (rc=$RC)"
 fi
 
-# A matcher on an event that carries no tool is silently ignored by the platform.
-F="$(write_fixture '{"hooks":{"SessionStart":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}]}}')"
+# A matcher on an event with no matcher support is silently ignored by the platform.
+F="$(write_fixture '{"hooks":{"Stop":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}]}}')"
 run_sut "$F"
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -Fq 'carries no tool name'; then
-  pass "a matcher on a non-tool event is flagged as an ignored no-op"
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -Fq 'has no matcher support'; then
+  pass "a matcher on an event with no matcher support is flagged as an ignored no-op"
 else
-  fail "a matcher on SessionStart should warn (rc=$RC)"
+  fail "a matcher on Stop should warn (rc=$RC)"
+fi
+
+# SessionStart filters on how the session started, so its matcher is a real filter.
+F="$(write_fixture '{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":"echo hi"}]}]}}')"
+run_sut "$F"
+if [ "$RC" -eq 0 ] && ! printf '%s' "$OUT" | grep -Fq 'has no matcher support'; then
+  pass "a SessionStart source matcher is accepted as a real filter"
+else
+  fail "a SessionStart source matcher should not warn (rc=$RC)"
 fi
 
 # ---------------------------------------------------------------------------------------
@@ -294,10 +303,13 @@ if [ -f "$DG/hooks/hooks.json" ]; then
     fail "dev-guardrails/hooks/hooks.json — passed but reported findings against known-correct code: $(printf '%s' "$OUT" | grep -E '^(ERROR|WARN)' | head -3 | tr '\n' ' ')"
   else
     inspected="$(printf '%s\n' "$OUT" | sed -n 's/.*inspected [0-9]* event(s), [0-9]* entry(ies), \([0-9][0-9]*\) hook.*/\1/p' | head -1)"
-    if [ -n "$inspected" ] && [ "$inspected" -ge 15 ]; then
+    # Count registrations from the file itself so cutting or adding a hook does not make this
+    # calibration test lie.
+    registered="$(jq '[.hooks[][] | .hooks[]] | length' "$DG/hooks/hooks.json")"
+    if [ -n "$inspected" ] && [ "$inspected" -ge "$registered" ]; then
       pass "dev-guardrails/hooks/hooks.json: clean, and all $inspected registered hooks were inspected"
     else
-      fail "dev-guardrails/hooks/hooks.json: clean but only inspected '$inspected' hooks — the file registers 15"
+      fail "dev-guardrails/hooks/hooks.json: clean but only inspected '$inspected' hooks — the file registers $registered"
     fi
   fi
 else

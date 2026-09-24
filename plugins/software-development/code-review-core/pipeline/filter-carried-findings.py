@@ -1,54 +1,46 @@
 #!/usr/bin/env python3
-"""filter-carried-findings.py — drop findings whose cited line is no longer in the diff.
+"""filter-carried-findings.py — drop findings whose cited lines are not on changed lines.
 
 Invoked by `pipeline/review-scan.sh` (see its `FILTER=` assignment) to diff-scope SCAN.json. That is
-the ONLY caller. This docstring used to add "and used again during Tier 1
-carry-forward", describing a per-specialist skip that no longer exists (the 3.0.0 cutover deleted the
-fan-out it gated) inside a cache arm that could never execute (since deleted).
-Neither ever called this file.
-
-The stale-line problem below is still real for the one live caller, and is the check any future
-carry-forward would need: some findings reference a `file:line` that no longer exists in the
-current-round diff — e.g. a refactor moved `foo()` from
-`a.py:42` to `b.py:100`, so a prior finding on `a.py:42` is now stale (the same defect may or
-may not still be present, but on a *different* line). Rather than post noise, drop those.
+the only caller. It is what stops a repository's existing lint debt from arriving as hundreds of
+findings about code the change never touched.
 
 Semantics.
     For each finding in the input JSON:
-      - Parse `location: "path[:linespec]"`. `linespec` may be a bare int (`87`), a range
-        (`87-90` or `87–90` with an em-dash), or "path:LineX+" style — we only try to extract
-        integers.
-      - If no line component: KEEP (we can't line-check → conservative).
-      - If path not in the diff at all (no `diff --git` block): DROP.
-      - Else `git diff -U0 target source -- <path>` and inspect hunks:
-          hunk header `@@ -a,b +c,d @@` covers new-side lines `[c, c+d-1]` (d defaults to 1
-          when omitted). If ANY cited line intersects ANY hunk range: KEEP. Else: DROP.
-      - Findings with `location` empty / unparseable: KEEP (we can't tell → conservative).
-      - Findings with `in_diff: false` explicitly set by the specialist: KEEP (the specialist
-        already reasoned about this — they're pointing at cross-cutting or extra-diff state).
+      - `in_diff: false` set explicitly: KEEP. The producer already reasoned that the finding is
+        about state outside the diff (the coverage gate, a dangling reference in a peer file).
+      - Parse `location: "path[:linespec]"`. `linespec` is any mix of single lines and ranges:
+        `87`, `87-90` (also with an en-dash, em-dash or minus sign), `12, 15, 22`, `12+`.
+      - No path, or no line component: KEEP (cannot line-check, so stay conservative).
+      - Path with no hunks in `git diff -U0 target...source -- path`: DROP.
+      - Otherwise KEEP when ANY cited line or range overlaps ANY hunk, else DROP.
+
+    A range is an INTERVAL, not its two endpoints. `80-100` with only line 90 changed is kept: a
+    finding about a resource block the change edited in the middle is in the diff.
+
+    Hunks. `@@ -a,b +c,d @@` covers new-side lines [c, c+d-1] (d defaults to 1). A pure deletion
+    has d == 0 and no new-side lines at all; git names the new-side line the deletion follows (0
+    when it is at the top of the file). That boundary line is treated as changed, clamped to line 1,
+    because a finding ABOUT the deletion can only be anchored there: `detectors/impact.sh` anchors
+    "this removed symbol still has consumers" to exactly that line, and before this rule every such
+    finding was dropped, which is the worst miss the impact detector can have.
 
 Output.
-    Writes filtered JSON to <out>. Prints a per-finding disposition line to stderr
-    (`KEEP <id> <location>` / `DROP <id> <location> — reason`) and a summary count to stdout
+    Writes the filtered JSON to --out. Prints one disposition line per finding to stderr
+    (`KEEP <id> <location> — reason` / `DROP <id> <location> — reason`) and a summary to stdout
     (`FILTER: <kept>/<total> kept, <dropped> dropped from <path>`).
+
+Exit status.
+    0  the output was written. A `git diff` failure for one path does NOT fail the run: the
+       findings on that path are KEPT and the error is in their disposition line, because dropping
+       on a tool error would hide findings and a caller cannot tell that apart from a clean diff.
+    2  bad arguments (argparse).
+    3  --in is missing or is not a JSON object.
 
 Portable: python3 only. No external deps (uses `subprocess` for git). No network.
 
-Also filters the sibling .md report when `--in-md` / `--out-md` are supplied: any dropped
-finding-ID has its `## <ID> — ...` section (from the heading through the next `## ` heading or
-the REVIEW-COMPLETE trailer) removed. If the section can't be located, the .md is copied
-through unchanged and the disposition is logged; the .json filter is always authoritative.
-
 Usage:
-    filter-carried-findings.py \
-        --in  .code-review/archive/<prev-sha>/RELIABILITY.json \
-        --out .code-review/RELIABILITY.json \
-        --target <target-ref> --source <source-ref> \
-        [--in-md  .code-review/archive/<prev-sha>/RELIABILITY.md \
-         --out-md .code-review/RELIABILITY.md]
-
-    Both refs may be branch names or SHAs. Errors from git bubble up as exit 2 with the
-    subprocess stderr; a missing `--in` exits 3.
+    filter-carried-findings.py --in SCAN.raw.json --out SCAN.json --target <ref> --source <ref>
 """
 
 from __future__ import annotations
@@ -58,60 +50,61 @@ import json
 import re
 import subprocess
 import sys
-from typing import Iterable
 
 HUNK_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@")
-LOCATION_RE = re.compile(
-    r"^(?P<path>[^\s:]+):(?P<lines>[\d\-–—−\s+,]+)"
-)
+LOCATION_RE = re.compile(r"^(?P<path>[^\s:]+):(?P<lines>[\d\-–—−\s+,]+)")
+# A range `a-b` (any dash) or a single line. Tried as a range first so `87-90` is one interval.
+SPEC_RE = re.compile(r"(\d+)\s*[-–—−]\s*(\d+)|(\d+)")
+
+# quotePath=false keeps git's own messages readable for non-ASCII paths; literal pathspecs stop a
+# path like `[ab].py` from being read as a glob that also matches `a.py`.
+GIT = ["git", "-c", "core.quotePath=false", "--literal-pathspecs"]
 
 
-def parse_line_spec(spec: str) -> list[int]:
-    """Extract every integer mentioned in a line-spec string.
+def parse_line_spec(spec: str) -> list[tuple[int, int]]:
+    """Return the cited lines as inclusive intervals; empty when nothing parses.
 
-    Accepts `"42"`, `"87-90"`, `"87–90"` (en-dash), `"87—90"` (em-dash),
-    `"12, 15, 22"`, `"12+"` (trailing modifiers stripped). Returns a list of ints; empty if
-    nothing parseable — the caller then treats the finding as "no line component" and keeps.
+    `"42"` -> [(42, 42)], `"87-90"` -> [(87, 90)], `"12, 15"` -> [(12, 12), (15, 15)],
+    `"12+"` -> [(12, 12)]. A reversed range is normalised.
     """
-    return [int(m.group()) for m in re.finditer(r"\d+", spec)]
+    out: list[tuple[int, int]] = []
+    for m in SPEC_RE.finditer(spec):
+        if m.group(1):
+            a, b = int(m.group(1)), int(m.group(2))
+            out.append((min(a, b), max(a, b)))
+        else:
+            n = int(m.group(3))
+            out.append((n, n))
+    return out
 
 
-def parse_location(loc: str) -> tuple[str, list[int]]:
-    """Return (path, [lines]). If no `:linespec` present, `[lines]` is [].
-
-    A trailing colon with no digits (`path:`) or with only non-numeric text (`path:Step 3a`)
-    returns [] — we can't line-check, keep.
-    """
+def parse_location(loc: str) -> tuple[str, list[tuple[int, int]]]:
+    """Return (path, [intervals]). No `:linespec` gives []."""
     if not loc:
         return "", []
-    # Fast path: no colon → whole thing is a path.
     if ":" not in loc:
         return loc.strip(), []
     m = LOCATION_RE.match(loc.strip())
     if not m:
-        # Colon present but not a clean `path:linespec` — split on FIRST colon, take LHS as
-        # path and try to extract lines from the rest.
+        # A colon but not a clean `path:linespec` (a path with a space, `path:Step 3a`): split on the
+        # FIRST colon and extract what lines there are from the rest.
         path, _, rest = loc.partition(":")
         return path.strip(), parse_line_spec(rest)
     return m.group("path").strip(), parse_line_spec(m.group("lines"))
 
 
-def git_diff_new_hunks(target: str, source: str, path: str) -> tuple[bool, list[tuple[int, int]]]:
-    """Return (path_in_diff, [(start, end_inclusive), ...]) on the new side.
+def git_diff_new_hunks(target: str, source: str, path: str) -> list[tuple[int, int]]:
+    """New-side hunk intervals for `path` in target...source. Empty means the path is unchanged.
 
-    Runs `git diff -U0 <target>...<source> -- <path>` and parses hunk headers. A path with no
-    diff block returns (False, []) — meaning the file wasn't touched at all in the range, so
-    a carried finding on it is definitionally stale (except for `in_diff: false` findings,
-    handled by the caller).
+    Raises RuntimeError when git fails, so the caller can keep rather than drop.
     """
     proc = subprocess.run(
-        ["git", "diff", "-U0", f"{target}...{source}", "--", path],
+        GIT + ["diff", "-U0", "--no-color", f"{target}...{source}", "--", path],
         capture_output=True,
         text=True,
         check=False,
     )
     if proc.returncode != 0:
-        # Non-zero from `git diff` here almost always means bad ref. Bubble up.
         raise RuntimeError(
             f"git diff failed for {path} ({target}...{source}): {proc.stderr.strip()}"
         )
@@ -121,65 +114,28 @@ def git_diff_new_hunks(target: str, source: str, path: str) -> tuple[bool, list[
         if not m:
             continue
         start = int(m.group(1))
-        length = int(m.group(2)) if m.group(2) else 1
+        length = int(m.group(2)) if m.group(2) is not None else 1
         if length == 0:
-            # Pure deletion — no new-side lines to intersect with. Skip.
+            # Pure deletion: the boundary line it follows (see the module docstring).
+            anchor = max(start, 1)
+            hunks.append((anchor, anchor))
             continue
         hunks.append((start, start + length - 1))
-    # `git diff` with a path arg and no diff prints nothing at all (rc=0, empty stdout). No
-    # hunks means the file is unchanged in this range.
-    return (bool(hunks), hunks)
+    return hunks
 
 
-def any_line_in_hunks(lines: Iterable[int], hunks: list[tuple[int, int]]) -> bool:
-    return any(any(start <= ln <= end for start, end in hunks) for ln in lines)
-
-
-def strip_md_sections(md_text: str, drop_ids: set[str]) -> tuple[str, list[str]]:
-    """Remove `## <ID> — ...` sections whose ID is in `drop_ids`.
-
-    A "section" is the `## <ID> —` heading through (exclusive of) the next `## ` heading, or
-    to a `<!-- REVIEW-COMPLETE ... -->` trailer line, or to EOF. Returns the filtered text
-    and the list of IDs that could NOT be located (for logging — .md drift is not fatal).
-    """
-    lines = md_text.splitlines(keepends=True)
-    out: list[str] = []
-    i = 0
-    found: set[str] = set()
-    while i < len(lines):
-        line = lines[i]
-        heading = re.match(r"^##\s+([A-Z][A-Z0-9\-]*(?:-[A-Z]+-\d+|-\d+))\b", line)
-        if heading and heading.group(1) in drop_ids:
-            found.add(heading.group(1))
-            # Skip until the next `## ` heading OR a REVIEW-COMPLETE trailer OR EOF.
-            i += 1
-            while i < len(lines):
-                nxt = lines[i]
-                if nxt.startswith("## ") or nxt.startswith("<!-- REVIEW-COMPLETE"):
-                    break
-                i += 1
-            continue
-        out.append(line)
-        i += 1
-    unlocated = sorted(drop_ids - found)
-    return "".join(out), unlocated
+def overlaps(cited: list[tuple[int, int]], hunks: list[tuple[int, int]]) -> bool:
+    """True when any cited interval shares at least one line with any hunk."""
+    return any(a <= h_end and h_start <= b for a, b in cited for h_start, h_end in hunks)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="inp", required=True, help="Prior-round findings JSON")
-    ap.add_argument("--out", dest="outp", required=True, help="Filtered output path")
-    ap.add_argument("--target", required=True, help="target ref (main branch)")
-    ap.add_argument("--source", required=True, help="source ref (the branch under review)")
-    ap.add_argument("--in-md", dest="in_md", help="Prior-round .md report (optional)")
-    ap.add_argument("--out-md", dest="out_md", help="Filtered .md output (optional)")
+    ap = argparse.ArgumentParser(description="Keep only findings on changed lines.")
+    ap.add_argument("--in", dest="inp", required=True, help="findings JSON to filter")
+    ap.add_argument("--out", dest="outp", required=True, help="filtered output path")
+    ap.add_argument("--target", required=True, help="base ref")
+    ap.add_argument("--source", required=True, help="the ref under review")
     args = ap.parse_args()
-    if bool(args.in_md) != bool(args.out_md):
-        print(
-            "filter-carried-findings: --in-md and --out-md must be given together (or neither)",
-            file=sys.stderr,
-        )
-        return 2
 
     try:
         with open(args.inp) as f:
@@ -187,49 +143,51 @@ def main() -> int:
     except FileNotFoundError:
         print(f"filter-carried-findings: no input file {args.inp}", file=sys.stderr)
         return 3
+    except ValueError as exc:
+        print(f"filter-carried-findings: {args.inp} is not valid JSON: {exc}", file=sys.stderr)
+        return 3
+    if not isinstance(data, dict):
+        print(f"filter-carried-findings: {args.inp} is not a JSON object", file=sys.stderr)
+        return 3
 
-    findings = data.get("findings", [])
+    findings = data.get("findings") or []
     kept: list[dict] = []
     dropped_ids: list[str] = []
-    # Memoize per-path diff results so a file with 30 findings only diffs once.
-    diff_cache: dict[str, tuple[bool, list[tuple[int, int]]]] = {}
+    # One `git diff` per path, however many findings cite it.
+    diff_cache: dict[str, list[tuple[int, int]]] = {}
 
     for f in findings:
         fid = f.get("id", "?")
         loc = f.get("location", "")
-        # Explicit `in_diff: false` — the specialist reasoned about extra-diff state (config
-        # elsewhere, dangling reference in a peer file). Keep.
         if f.get("in_diff") is False:
             kept.append(f)
             print(f"KEEP {fid} {loc} — in_diff=false", file=sys.stderr)
             continue
 
-        path, lines = parse_location(loc)
+        path, cited = parse_location(loc)
         if not path:
             kept.append(f)
             print(f"KEEP {fid} {loc} — unparseable location", file=sys.stderr)
             continue
-        if not lines:
+        if not cited:
             kept.append(f)
             print(f"KEEP {fid} {loc} — no line component", file=sys.stderr)
             continue
 
-        # Diff the path once, reuse.
         try:
             if path not in diff_cache:
                 diff_cache[path] = git_diff_new_hunks(args.target, args.source, path)
         except RuntimeError as exc:
-            # Git failed — don't drop on tool error. Keep, note.
             kept.append(f)
             print(f"KEEP {fid} {loc} — git diff error: {exc}", file=sys.stderr)
             continue
 
-        path_in_diff, hunks = diff_cache[path]
-        if not path_in_diff:
+        hunks = diff_cache[path]
+        if not hunks:
             dropped_ids.append(fid)
             print(f"DROP {fid} {loc} — path not in diff", file=sys.stderr)
             continue
-        if not any_line_in_hunks(lines, hunks):
+        if not overlaps(cited, hunks):
             dropped_ids.append(fid)
             print(f"DROP {fid} {loc} — cited line(s) not in any hunk", file=sys.stderr)
             continue
@@ -240,32 +198,9 @@ def main() -> int:
     with open(args.outp, "w") as f:
         json.dump(data, f, indent=2)
 
-    total = len(findings)
-    n_kept = len(kept)
-    n_dropped = len(dropped_ids)
-    print(f"FILTER: {n_kept}/{total} kept, {n_dropped} dropped from {args.inp}")
+    print(f"FILTER: {len(kept)}/{len(findings)} kept, {len(dropped_ids)} dropped from {args.inp}")
     if dropped_ids:
         print(f"  Dropped IDs: {', '.join(dropped_ids)}")
-
-    if args.in_md:
-        try:
-            with open(args.in_md) as f:
-                md_text = f.read()
-        except FileNotFoundError:
-            print(
-                f"filter-carried-findings: --in-md {args.in_md} missing — writing empty .md",
-                file=sys.stderr,
-            )
-            md_text = ""
-        filtered_md, unlocated = strip_md_sections(md_text, set(dropped_ids))
-        with open(args.out_md, "w") as f:
-            f.write(filtered_md)
-        if unlocated:
-            print(
-                f"  WARN: {len(unlocated)} dropped ID(s) not found in .md — .json is authoritative: "
-                f"{', '.join(unlocated)}",
-                file=sys.stderr,
-            )
     return 0
 
 

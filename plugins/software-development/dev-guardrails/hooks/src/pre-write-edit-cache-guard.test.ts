@@ -30,6 +30,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { EXIT_ALLOW, EXIT_BLOCK } from './lib/types.ts';
 import {
   PLUGIN_CACHE_ALLOW_MARKER,
@@ -142,6 +144,35 @@ describe('parsePluginCachePath', () => {
       null,
     );
   });
+
+  it('collapses `..` before matching, so traversal cannot hide the cache triple', () => {
+    const t = parsePluginCachePath('/home/dev/.claude/plugins/x/../cache/mp/plug/1.0.0/a.ts');
+    assert.ok(t);
+    assert.equal(t.plugin, 'plug');
+    assert.equal(parsePluginCachePath('/home/dev/.claude/plugins/cache/../../src/a.ts'), null);
+  });
+
+  it('matches case-insensitively and across Windows separators', () => {
+    assert.equal(parsePluginCachePath('/Users/x/.Claude/Plugins/Cache/mp/plug/1.0.0/a.ts')?.plugin, 'plug');
+    assert.equal(parsePluginCachePath('C:\\Users\\x\\.claude\\plugins\\cache\\mp\\plug\\1.0.0\\a.ts')?.plugin, 'plug');
+  });
+
+  it('honours a plugins directory relocated by CLAUDE_CONFIG_DIR or the cache/seed env vars', () => {
+    const p = '/opt/cfg/plugins/cache/mp/plug/2.1.0/hooks/x.ts';
+    assert.equal(parsePluginCachePath(p, {}), null);
+    const t = parsePluginCachePath(p, { CLAUDE_CONFIG_DIR: '/opt/cfg' });
+    assert.ok(t);
+    assert.equal(t.version, '2.1.0');
+    assert.equal(t.inPlugin, 'hooks/x.ts');
+    assert.equal(
+      parsePluginCachePath('/seed/cache/mp/plug/1.0.0/a.ts', { CLAUDE_CODE_PLUGIN_SEED_DIR: '/a:/seed' })?.plugin,
+      'plug',
+    );
+    assert.equal(
+      parsePluginCachePath('/build/cache/mp/plug/1.0.0/a.ts', { CLAUDE_CODE_PLUGIN_CACHE_DIR: '/build' })?.plugin,
+      'plug',
+    );
+  });
 });
 
 describe('evaluatePluginCacheWrite', () => {
@@ -250,6 +281,22 @@ describe('pre-write-edit plugin-cache gate, as Claude Code runs it', () => {
       /INSTALLED COPY/,
       'the credential must be what gets reported when both gates fire',
     );
+  });
+
+  it('BLOCKS a write that reaches the cache through a symlink in the working tree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pwe-cache-'));
+    try {
+      const installed = join(root, 'home', '.claude', 'plugins', 'cache', 'mp', 'plug', '1.0.0');
+      mkdirSync(installed, { recursive: true });
+      const repo = join(root, 'repo');
+      mkdirSync(repo);
+      symlinkSync(installed, join(repo, 'vendored'));
+      const r = runHook(write(join(repo, 'vendored', 'hooks', 'new.ts'), CLEAN));
+      assert.equal(r.code, EXIT_BLOCK, `expected a BLOCK, got ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /INSTALLED COPY/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('still BLOCKS a credential written to an ordinary path', () => {

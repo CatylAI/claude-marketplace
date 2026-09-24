@@ -53,7 +53,7 @@ if need shellcheck; then
   # -x follows `source`d files so a sourced _lib.sh does not produce phantom "not assigned" noise.
   shellcheck --format=json1 -x "$@" > "$RAW/shellcheck.json" 2> "$RAW/.sc.err"
   if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$RAW/shellcheck.json" 2>/dev/null; then
-    skip "shellcheck" "unparseable output: $(head -c 200 "$RAW/.sc.err" | tr '\n' ' ')"
+    skip "shellcheck" "unparseable output: $(excerpt "$RAW/.sc.err")"
     rm -f "$RAW/shellcheck.json"
   else
     note shellcheck "ok"

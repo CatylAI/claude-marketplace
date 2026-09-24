@@ -1,27 +1,38 @@
-// PostToolUse hook (Write/Edit): security and maintainability smells in the file just written.
-// Non-blocking — always exits 0.
+// PostToolUse hook (Write|Edit): the ONE process Claude Code spawns after a file edit. It runs
+// three stages and reports them together. Non-blocking: always exits 0.
 //
-// THE DIVISION OF LABOUR WITH pre-write-edit.ts MATTERS. That hook BLOCKS, and it blocks exactly
-// one class: credential-shaped content, which is unrecoverable once written (the bytes are on
-// disk, and on a shared branch they are in history). Everything here is recoverable by editing
-// the file again, so none of it blocks. A PostToolUse hook that blocked would be theatre anyway:
-// it fires AFTER the write, so it can only stop the next step while leaving the file as written.
+//   1. Smells (this file): security and maintainability patterns, plus the comment-density nudge.
+//   2. Type check / lint (post-type-check.ts): the project's own checkers, rate-limited.
+//   3. Tests (post-test.ts): the covering test, gated by edit count and cooldown.
 //
-// TWO DIFFERENT INPUTS, deliberately:
+// ONE PROCESS, NOT THREE. Each stage used to be its own hook entry, so every Write/Edit paid three
+// node start-ups and three `git rev-parse` calls, and three hooks each re-derived the same project
+// root. Consolidated, the fixed cost is paid once.
 //
-//   - The SECURITY checks read the file from DISK. They are about the state of the file that now
-//     exists, and an Edit's `new_string` shows only a fragment of it.
-//   - The COMMENT-DENSITY check reads what THIS CALL WROTE (`content` / `new_string`). A
-//     whole-file metric would charge an agent for comments it did not write, which is the fastest
-//     way to make a style nudge worthless.
+// OUTPUT GOES TO CLAUDE THROUGH additionalContext. The old stages wrote to stderr and exited 0,
+// and Claude Code sends that to the debug log only: none of these findings ever reached the model.
+// Everything is now collected and emitted as one JSON object (lib/additional-context.ts).
+//
+// THE DIVISION OF LABOUR WITH pre-write-edit.ts. That hook BLOCKS, and only on what is
+// unrecoverable once written (credentials, writes into an installed plugin copy). Everything here
+// is recoverable by editing again, so it only informs. Blocking would be theatre anyway: this
+// fires AFTER the write.
+//
+// FINDINGS ARE ABOUT WHAT THIS CALL CHANGED. A finding that was already in the file before this
+// Edit is not repeated: re-reporting the same `innerHTML` on every edit to a file is pure context
+// cost and trains the reader to skip the section. For an Edit the previous file is reconstructed
+// by reversing the replacement; a Write reports on the whole file, since it wrote all of it.
 //
 // FORMATTERS ARE DELIBERATELY ABSENT. Running one on every intermediate Edit rewrites the file
 // mid-way through a multi-step change and invalidates the `old_string` of the edits still queued.
 
 import { readStdin } from './lib/stdin.ts';
-import { info } from './lib/output.ts';
+import type { HookInput } from './lib/types.ts';
+import { emitContext } from './lib/additional-context.ts';
 import { analyzeCommentDensity, commentDensityMessage } from './lib/comment-density.ts';
 import { execArgv } from './lib/shell.ts';
+import { runTypeChecks } from './post-type-check.ts';
+import { maybeRunTests } from './post-test.ts';
 import {
   SHELL_TRUE, FSTRING_SQL, AWS_KEY,
   INNER_HTML, DANGEROUS_SET_INNER_HTML, V_HTML, EVAL_CALL,
@@ -166,13 +177,84 @@ export function checkShellScript(content: string, filePath: string): string[] {
   return warnings;
 }
 
-function emit(label: string, warnings: string[]): void {
-  if (warnings.length > 0) info(`${label}:\n- ${warnings.join('\n- ')}`);
+const LABELS: Record<'py' | 'js' | 'tf' | 'shell', string> = {
+  py: 'Python check',
+  js: 'JS/TS check',
+  tf: 'Terraform check',
+  shell: 'Shell script check',
+};
+
+/** The smell findings for `content`, by language. [] for a language with no checks. */
+export function smellFindings(content: string, ext: string, fileAbs: string): string[] {
+  switch (extLanguage(ext)) {
+    case 'py': return checkPython(content, fileAbs);
+    case 'js': return checkJavaScript(content, fileAbs);
+    case 'tf': return checkTerraform(content);
+    case 'shell': return checkShellScript(content, fileAbs);
+    case 'other': return [];
+  }
+}
+
+/**
+ * The file as it was before an Edit, reconstructed from the file now on disk, or null when that
+ * is not possible (an empty new_string leaves nothing to locate).
+ */
+export function reverseEdit(after: string, oldString: string, newString: string, replaceAll: boolean): string | null {
+  if (!newString) return null;
+  const at = after.indexOf(newString);
+  if (at === -1) return null;
+  if (replaceAll) return after.split(newString).join(oldString);
+  return after.slice(0, at) + oldString + after.slice(at + newString.length);
+}
+
+/**
+ * Findings present after the call and not before. Counts are ignored when comparing, so "5
+ * console statements" after "4 console statements" is the same finding and is not repeated.
+ */
+export function introducedFindings(before: readonly string[], after: readonly string[]): string[] {
+  const shape = (f: string): string => f.replace(/\d+/g, '#');
+  const had = new Set(before.map(shape));
+  return after.filter((f) => !had.has(shape(f)));
+}
+
+/**
+ * Stage 1 for one call. `current` is the file on disk now. Pure apart from its inputs.
+ */
+export function smellReport(input: HookInput, current: string, ext: string, fileAbs: string): string | null {
+  const ti = input.tool_input ?? {};
+  const written = typeof ti.content === 'string' ? ti.content : (ti.new_string ?? '');
+  let findings: string[];
+  if (input.tool_name === 'Edit') {
+    const before = reverseEdit(current, ti.old_string ?? '', ti.new_string ?? '', ti.replace_all === true);
+    findings = before === null
+      ? smellFindings(written, ext, fileAbs) // cannot reconstruct: judge the fragment alone
+      : introducedFindings(smellFindings(before, ext, fileAbs), smellFindings(current, ext, fileAbs));
+  } else {
+    findings = smellFindings(current, ext, fileAbs);
+  }
+
+  const parts: string[] = [];
+  const lang = extLanguage(ext);
+  if (findings.length > 0 && lang !== 'other') parts.push(`${LABELS[lang]}:\n- ${findings.join('\n- ')}`);
+  // Density measures what THIS call wrote, never the whole file (see lib/comment-density.ts).
+  const density = analyzeCommentDensity(written, ext, fileAbs);
+  if (density) parts.push(commentDensityMessage(density));
+  return parts.length > 0 ? parts.join('\n\n') : null;
 }
 
 // --- Main --------------------------------------------------------------------------------------
 
+const SKIP_DIRS = ['/node_modules/', '/dist/', '/build/', '/__pycache__/', '/.git/'];
+
+/**
+ * The test stage starts only if the earlier stages finished inside this budget. The hook's
+ * registered timeout is 60 s and a timed-out hook's output is discarded whole, so a slow type
+ * check followed by a 30 s test run must not be allowed to lose both reports.
+ */
+export const TEST_STAGE_START_BUDGET_MS = 25_000;
+
 async function run(): Promise<void> {
+  const started = Date.now();
   try {
     const input = await readStdin();
     if (input.tool_name !== 'Write' && input.tool_name !== 'Edit') process.exit(0);
@@ -183,11 +265,11 @@ async function run(): Promise<void> {
     const resolved = resolve(filePath);
     if (!existsSync(resolved)) process.exit(0);
 
-    // Through realpath BEFORE the containment check below. `git rev-parse --show-toplevel` always
-    // answers with symlinks resolved, so comparing it against an unresolved path fails for every
-    // repo reached through a symlinked parent — and the hook then silently reports nothing, which
-    // is indistinguishable from a clean file.
+    // Through realpath BEFORE the containment check below. `git rev-parse --show-toplevel` answers
+    // with symlinks resolved, so an unresolved path fails containment for every repo reached
+    // through a symlinked parent, and the hook then reports nothing.
     const fileAbs = realpathSync(resolved);
+    if (SKIP_DIRS.some((d) => fileAbs.includes(d))) process.exit(0);
 
     // argv, not a shell string: the path is tool input, and a directory whose NAME contains a
     // command substitution would otherwise execute here.
@@ -195,50 +277,38 @@ async function run(): Promise<void> {
       execArgv('git', ['-C', dirname(fileAbs), 'rev-parse', '--show-toplevel'], { timeout: 5000 }) ??
       process.cwd();
 
-    // Never report on a file outside the project being worked in.
+    // Never report on, or run a project's tooling against, a file outside the project.
     if (!fileAbs.startsWith(projectRoot + '/') && fileAbs !== projectRoot) process.exit(0);
 
     const ext = extname(fileAbs).slice(1).toLowerCase();
+    const sections: string[] = [];
 
-    // The text THIS call wrote, captured before the whole-file read below.
-    const written = input.tool_input?.content ?? input.tool_input?.new_string ?? '';
-
-    let content: string;
+    let current = '';
     try {
-      content = readFileSync(fileAbs, 'utf-8');
+      current = readFileSync(fileAbs, 'utf-8');
     } catch {
-      process.exit(0);
+      /* unreadable: the smell stage has nothing to judge, the others may still apply */
+    }
+    const smells = current ? smellReport(input, current, ext, fileAbs) : null;
+    if (smells) sections.push(smells);
+
+    sections.push(...runTypeChecks(fileAbs, projectRoot, ext));
+
+    if (Date.now() - started < TEST_STAGE_START_BUDGET_MS) {
+      const tests = maybeRunTests(fileAbs, projectRoot);
+      if (tests) sections.push(tests);
     }
 
-    switch (extLanguage(ext)) {
-      case 'py':
-        emit('Python check', checkPython(content, fileAbs));
-        break;
-      case 'js':
-        emit('JS/TS check', checkJavaScript(content, fileAbs));
-        break;
-      case 'tf':
-        emit('Terraform check', checkTerraform(content));
-        break;
-      case 'shell':
-        emit('Shell script check', checkShellScript(content, fileAbs));
-        break;
-      case 'other':
-        break;
-    }
-
-    // Outside the switch, so it covers every language comment-density knows about without a
-    // duplicate call in four arms.
-    const density = analyzeCommentDensity(written, ext, fileAbs);
-    if (density) info(commentDensityMessage(density));
+    emitContext('PostToolUse', sections.join('\n\n'));
   } catch {
-    // Silent failure — never surface a hook fault as a failed edit.
+    // Fail open and silent: a broken check must never look like a failed edit.
   }
 
   process.exit(0);
 }
 
-// Only run as the hook entrypoint — importing (e.g. from tests) must not block on stdin.
+// Only run as the hook entrypoint. Without this guard, importing the module (as the tests do)
+// would block on stdin during module evaluation and the runner would never reach an assertion.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await run();
 }

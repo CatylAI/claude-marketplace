@@ -39,12 +39,12 @@ Three decisions worth knowing about:
 
 2.  **Range findings are emitted as enumerated lines, capped.** checkov and tfsec report a resource
     *block* (`file_line_range: [4, 11]`). The downstream diff filter
-    (`pipeline/filter-carried-findings.py`) extracts every integer from the location and
-    keeps a finding if ANY cited line is in a hunk — but it does not expand `4-11`, it sees only
+    (`pipeline/filter-carried-findings.py`) used to extract every integer from the location and
+    keep a finding if ANY cited line was in a hunk — it did not expand `4-11`, it saw only
     {4, 11}. A diff that changed line 8 would therefore drop a finding that is genuinely in the
-    diff. So spans of <= RANGE_ENUM_CAP lines are written `path:4,5,6,...,11`, which the filter
-    handles correctly with no modification. Longer spans fall back to `path:start-end` and accept
-    endpoint-only matching rather than emitting a 200-line location string.
+    diff. So spans of <= RANGE_ENUM_CAP lines are written `path:4,5,6,...,11`. The filter has
+    since learned to test `start-end` as an interval, so longer spans written that way are matched
+    correctly too; the short-span enumeration is kept only so existing output does not change shape.
 
 3.  **pylint `convention` and `refactor` are dropped.** They are ~90% of pylint's default output
     ("Missing module docstring" on line 1 of every new file), they survive diff-scoping because new
@@ -59,10 +59,10 @@ import json
 import os
 import sys
 
-# IMPORTED, not restated. contract.py is the reference definition of what makes a finding usable;
-# `review-validator.md` and `agent-contracts/SKILL.md` carry RESTATEMENTS because neither of
-# those is a process, and their parity with this is checked by execution rather than by reading
-# them side by side.
+# IMPORTED, not restated. contract.py is the only definition of what makes a finding usable and
+# what makes it block. No prose copy of the predicate is maintained: the
+# `dev-standards:agent-contracts` skill gives a one-line summary and points to contract.py, and
+# `agents/review-validator.md` only records judgements.
 #
 # SELF-LOCATING, and it has to be. `python3 normalize.py` puts this directory on sys.path, but two
 # other loaders do not: review-scan.test.sh loads this file through
@@ -99,15 +99,13 @@ from contract import (  # noqa: F401 — re-exported for this module's consumers
     SEVERITY_ALIASES,
     SEVERITY_RANK,
     # The second of the two NUMERIC constants the repair pass reads (`_SCALAR_UNWRAP_LIMIT` is the
-    # other, sorted up among the `_` names above). Re-exported so `check-predicate-parity.py` can
-    # DERIVE its shape cases from them instead of spelling 300 and 4 in a second place: a matrix keyed
-    # on alias names cannot see a copy that hardcodes a different bound, which is how
-    # `review-validator.md`'s `[:300]` and `range(4)` sat uncompared against these.
+    # other, sorted up among the `_` names above). Re-exported so a test can DERIVE its shape cases
+    # from them instead of spelling 300 and 4 in a second place, and so mk() below caps titles with
+    # the same number the repair pass uses.
     TITLE_MAX,
     # The shape guard both alias loops run every candidate through, re-exported for the same reason as
     # the tables above: a suite that can only reach it through `normalize_finding` can assert the
-    # OUTCOME but not the rule, and `scripts/check-predicate-parity.py` loads the reference through
-    # this module rather than reaching past it.
+    # OUTCOME but not the rule.
     _first_scalar,
     _scalar,
     blocking_floor_rank,
@@ -121,6 +119,9 @@ from contract import (  # noqa: F401 — re-exported for this module's consumers
     rollup_verdict,
     sort_rank,
 )
+# The one definition of "is this a test file", shared with prepare-context.sh. Same self-locating
+# sys.path entry as the contract import above.
+from testpaths import is_test_path  # noqa: E402
 
 # The vocabulary, the rank table, the floor and the blocking predicate all live in contract.py and
 # are re-exported above. They were defined HERE until the objective review pointed out that a module
@@ -130,9 +131,15 @@ from contract import (  # noqa: F401 — re-exported for this module's consumers
 # from blocking with nothing to catch it, and the subscript form both bypassed the parity gate and
 # raised on an unrankable value. Use `sort_rank()` for ordering and `canon_severity()` to look up.
 
-# Spans longer than this fall back to `start-end`; see decision 2 in the module docstring.
+# Spans longer than this fall back to `start-end`; see decision 2 in the module docstring. 30 keeps a
+# location string short enough to read at a glance (about 120 characters of line numbers).
 RANGE_ENUM_CAP = 30
+# Per-field caps for scanner findings. One source line of evidence is all a triager needs to
+# recognise the finding, and 200 characters is a long code line; the recommendation cap leaves room
+# for a sentence of why plus a doc URL. TITLE_MAX comes from contract.py so the scanner and the
+# repair pass agree on the title cap.
 EVIDENCE_MAX = 200
+RECOMMENDATION_MAX = 600
 
 SECRET_EVIDENCE = (
     "[redacted] a secret-scanning rule matched on this line. The value is deliberately not "
@@ -231,9 +238,9 @@ def mk(ctx, *, tool, sev, category, path, start, title, recommendation,
         "severity": sev,
         "category": category,
         "location": location(rel, start, end),
-        "title": title[:300],
+        "title": title[:TITLE_MAX],
         "evidence": SECRET_EVIDENCE if secret else (ctx.line(rel, start) or "(source line unavailable)"),
-        "recommendation": recommendation[:600] if recommendation else "",
+        "recommendation": recommendation[:RECOMMENDATION_MAX] if recommendation else "",
         "ux_impact": False,
         # true = "this diff introduced/worsened it". Detectors only ever run on changed files, and
         # the diff filter then drops anything not on a changed LINE, so true is the honest default:
@@ -466,9 +473,9 @@ def p_impact(raw, ctx):
 
 
 def p_own(tool, raw, ctx, default_sev, default_category):
-    """Parser for the detectors that carry their own severity — `deps` and `comments`.
+    """Parser for the detectors that carry their own severity — `deps`, `comments`, `iac-policy`.
 
-    Both decide the tier at the point they decide the RULE, because the two are the same judgement:
+    Each decides the tier at the point it decides the RULE, because the two are the same judgement:
     `actions-unpinned-uses` is MAJOR and `npm-range-loose` beside a lockfile is a NIT, and nothing
     outside the detector knows which rule fired. Re-deriving that here from a tool-wide map, the way
     p_ruff and p_tfsec must, would flatten the ladder those detectors were written to keep — and a
@@ -499,6 +506,12 @@ def p_comments(raw, ctx):
     # NIT is both the default and the only tier `comments.sh` emits. It is kept as a fallback rather
     # than hardcoded so a future rule there can arrive at a different tier without a change here.
     return p_own("comments", raw, ctx, NIT, "ARCHITECTURE")
+
+
+def p_iac_policy(raw, ctx):
+    # Tiers come from the detector, rule by rule (a PassRole on "*" is MAJOR, an undocumented
+    # variable a NIT); MINOR is only the fallback for a finding that arrives without one.
+    return p_own("iac-policy", raw, ctx, MINOR, "RELIABILITY")
 
 
 def p_pytest(raw, ctx):
@@ -538,12 +551,10 @@ def p_coverage(raw, ctx, fail_under):
 # --- assembly -------------------------------------------------------------------------------------
 
 def _is_test_path(path):
-    """Test-file heuristic: pytest's own discovery rules plus the conventional `tests/` layout."""
-    parts = (path or "").split("/")
-    base = parts[-1] if parts else ""
-    if base == "conftest.py" or base.startswith("test_") or base.endswith("_test.py"):
-        return True
-    return any(p in ("test", "tests") for p in parts[:-1])
+    """The ONE test-path predicate, from testpaths.py. This used to be a third, local heuristic that
+    disagreed with testpaths.py (it missed `spec/`, `e2e/` and `*.test.<ext>`), so B101 in those
+    files was reported as a real finding while prepare-context.sh called the same file a test."""
+    return is_test_path(path or "")
 
 
 # Two classes of finding are noise BY CONSTRUCTION, and both flooded the first real scans: a 16-file
@@ -658,6 +669,7 @@ def main():
     if_present("impact", p_impact)
     if_present("deps", p_deps)
     if_present("comments", p_comments)
+    if_present("iac-policy", p_iac_policy)
     if_present("pytest", p_pytest)
 
     coverage_pct = None
@@ -696,8 +708,12 @@ def main():
     if os.path.isdir(raw_dir):
         for name in sorted(os.listdir(raw_dir)):
             if name.endswith(".skipped"):
+                # errors="replace": a reason is often a byte-capped excerpt of a tool's stderr
+                # (`excerpt` in detectors/_lib.sh), and a 200-byte cut can split a UTF-8
+                # character. Strict decoding then raised here and failed the whole scan.
                 try:
-                    with open(os.path.join(raw_dir, name)) as fh:
+                    with open(os.path.join(raw_dir, name), encoding="utf-8",
+                              errors="replace") as fh:
                         reason = fh.read().strip()
                 except OSError:
                     reason = ""

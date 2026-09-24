@@ -1,13 +1,10 @@
 ---
 name: adr-init
-license: MIT
-description: Onboard a repository to Architecture Decision Records when it has no docs/adr/ coverage or only partial coverage. Surveys the codebase with read-only Explore agents, extracts the architectural decisions already made (module boundaries, chosen dependencies, data model, auth approach, deployment topology), proposes an ADR set for approval, then writes docs/adr/NNN-*.md plus the docs/adr/README.md index. Writes nothing before you approve. Use when adopting ADRs, when a repo has no recorded decisions, or when coverage is partial. Not for a repo that already has full coverage — add individual ADRs by hand there — and not for generating a CLAUDE.md hierarchy, which is project-init.
-when_to_use: no ADRs, missing docs/adr, adopt the ADR standard, set up architecture decision records, onboard ADRs, backfill ADRs, ADR coverage, record why we chose this
-user-invocable: true
-disable-model-invocation: true
+description: "Finds the architectural decisions a codebase already embodies and, once you approve the list, writes them to docs/adr/ with an index. Use when adopting ADRs or backfilling partial ADR coverage. Not for one new decision (write that ADR by hand); not for CLAUDE.md (use /init)."
 argument-hint: "[optional focus area, e.g. 'auth' or 'storage']"
-allowed-tools: Read, Write, Bash(find:*), Bash(ls:*), Bash(git:*), Bash(mkdir:*), Bash(pwd:*), Bash(test:*), Task, AskUserQuestion
-context: fork
+disable-model-invocation: true
+allowed-tools: Read, Glob, Grep, Bash(pwd), Bash(git rev-parse *), Agent, Edit(docs/adr/**), AskUserQuestion
+license: MIT
 ---
 
 # Onboard a Repo to Architecture Decision Records
@@ -16,44 +13,38 @@ An ADR records one decision that had alternatives: what was chosen, what forced 
 and what it costs. This skill finds the decisions a codebase has already made implicitly and
 writes them down.
 
-It is **interactive and read-first**. Nothing is written to disk until Step 3 is approved.
+It is **interactive and read-first**. Nothing is written to disk until the Step 3 list is approved.
 
 ## Step 1 — Assess current coverage
 
-Run these and work from the output:
+Focus area from the invocation: `$ARGUMENTS` (empty → whole repository).
 
-```bash
-pwd
-git rev-parse --is-inside-work-tree 2>/dev/null || echo no
-test -d docs/adr && echo yes || echo no
-ls docs/adr/[0-9]*.md 2>/dev/null | wc -l | tr -d ' '
-test -f docs/adr/README.md && echo yes || echo no
-ls -d */ 2>/dev/null | head -20
-```
+Run `pwd` and `git rev-parse --is-inside-work-tree`, then Glob `docs/adr/*.md` and the top-level
+directories. Record:
 
-In order: the current directory, whether this is a git repo, whether `docs/adr/` exists, how
-many ADR files it already holds, whether there is an index, and the top-level layout. The ADR
-count is what Step 4 continues numbering from, so read it rather than assuming zero.
+- whether `docs/adr/` and `docs/adr/README.md` exist;
+- the **highest** existing ADR number (the largest `NNN` prefix, not the file count: numbers can
+  have gaps, and a reused number corrupts the history). New ADRs start at highest + 1, or `001`.
 
-If you cannot run commands here — a surface with no shell — ask the user to paste the output
-and wait for it. Do not classify coverage or allocate ADR numbers from a guess: a proposal
-that duplicates or renumbers existing ADRs is worse than no proposal.
+**Without a checkout (web/Cowork):** ask the user to paste the top-level layout, the list of
+`docs/adr/` files and the index, and wait. Do not classify coverage or allocate numbers from a
+guess: a proposal that duplicates or renumbers existing ADRs is worse than none. On the web,
+Step 4 and Step 5 produce file contents for the user to save.
 
-Classify the repo from that output and say which case applies before doing anything else:
+Classify the repo and say which case applies before doing anything else:
 
 - **No `docs/adr/`** → uncovered. Full onboarding.
 - **ADR files but no index** → add the index first, then backfill gaps.
-- **Some ADRs** → partial. The goal is filling gaps, not duplicating. Read every existing
-  ADR and the index before proposing anything, so proposals do not overlap or contradict
-  what is already recorded.
+- **Some ADRs** → partial. Read every existing ADR and the index before proposing anything, so
+  proposals do not overlap or contradict what is recorded.
 
-If the repo is not a git repo, say so and continue anyway — ADRs are just files — but note
-that the numbering convention assumes the directory is version controlled.
+If the repo is not a git repo, say so and continue: ADRs are just files.
 
 ## Step 2 — Extract decisions with Explore agents
 
-Launch read-only `Explore` agents via the `Task` tool. Up to three in parallel, each with a
-distinct focus. If the user passed a focus area in `$ARGUMENTS`, narrow all three to it.
+Launch read-only `Explore` agents with the `Agent` tool, up to three in parallel, each with a
+distinct focus. If a focus area was given, narrow all three to it. Without the Agent tool (web),
+do the three passes yourself over what the user pasted.
 
 1. **Structure and boundaries** — module or package layout, service boundaries, the public
    API surface, how the code is decomposed and what that implies.
@@ -83,8 +74,8 @@ split candidates and present again.
 
 ## Step 4 — Write the approved ADRs
 
-Number zero-padded and sequential, continuing from any existing ADRs (`001`, `002`, …).
-Never reuse or renumber. One file per decision at `docs/adr/NNN-kebab-title.md`:
+Number with three digits, sequentially from the highest existing number + 1 (Step 1). Never
+reuse or renumber. One file per decision at `docs/adr/NNN-kebab-title.md`:
 
 ```markdown
 # ADR-NNN: <short decision title>
@@ -130,22 +121,28 @@ Change a recorded decision and amend its ADR in the same change.
 
 The Status column must be honest about the present, not aspirational.
 
-## Step 6 — Propose the repo config updates
+## Step 6 — Propose the CLAUDE.md line
 
-So the repo keeps its ADRs current after this run, propose — and apply only on approval:
+So the repo keeps its ADRs current, propose adding this section to the root `CLAUDE.md` (the section
+`project-new` leaves out until ADRs exist), and apply it only on approval:
 
-- **Root `CLAUDE.md`** — a short "Architecture and decisions" section naming `docs/adr/` as
-  the source of truth for architectural decisions, and stating the working rule: *changing a
-  decision an ADR records means amending that ADR in the same change*. If specific source
-  paths map to specific ADRs, record that mapping — it is what makes the ADRs get read.
-- **`.claude/settings.json`** — only if the user explicitly wants a repo-local nudge. Most
-  repos do not need one; the CLAUDE.md line does the work. If they skip it, say so rather
-  than silently omitting it.
+```markdown
+## Architecture and decisions
 
-If a `CLAUDE.md` already exists, ask before editing and offer overwrite / merge / skip for
-the affected section.
+Architectural decisions live in `docs/adr/` (index: `docs/adr/README.md`). Changing a decision an
+ADR records means amending or superseding that ADR in the same change.
+```
 
-## Step 7 — Summarize
+If specific source paths map to specific ADRs, offer to add that mapping: it is what makes the
+ADRs get read. If the section already exists, show the diff and ask before editing.
+
+## Step 7 — Verify
+
+Glob `docs/adr/[0-9][0-9][0-9]-*.md` and read `docs/adr/README.md`. Every ADR file has exactly one
+index row, no number appears twice, and every row links to a file that exists. Fix any mismatch
+before reporting.
+
+## Step 8 — Summarize
 
 List every file created or changed. Then state the two things that keep coverage alive:
 

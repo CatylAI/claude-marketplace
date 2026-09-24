@@ -1,4 +1,4 @@
-// PostToolUse hook (MCP tools): map an authentication failure to the RIGHT re-auth action.
+// PostToolUseFailure hook (MCP tools): map an authentication failure to the RIGHT re-auth action.
 //
 // The failure this exists for is not the 401 itself, it is what happens next. An MCP server
 // and the vendor's own CLI are two different credentials for the same vendor, and they fail
@@ -7,11 +7,18 @@
 // 401 on the next call — with the added cost that the operator now believes the auth path is
 // fine. Re-authorising the MCP SERVER is a different action entirely.
 //
-// Non-blocking by construction: a PostToolUse hook fires after the call returned, so blocking
-// would stop the next step while leaving the failure exactly as it was. It only adds context.
+// WHICH EVENT. An MCP tool that returns an error result fires PostToolUseFailure, not
+// PostToolUse (code.claude.com/docs/en/hooks, "PostToolUseFailure"), with the error text in a
+// top-level `error` string. Registered on PostToolUse, this hook saw only successful calls and so
+// could not see the failure it exists for. It reads `error` first and `tool_response` as a
+// fallback, so it also works if a server reports auth failure inside a successful result.
+//
+// OUTPUT is JSON additionalContext on stdout, the only channel from this event that reaches
+// Claude; stderr on exit 0 goes to the debug log. Non-blocking by construction: the call has
+// already failed, so the hook only adds the correct next step. Fails open and silent.
 
 import { readStdin } from './lib/stdin.ts';
-import { info } from './lib/output.ts';
+import { emitContext } from './lib/additional-context.ts';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -78,9 +85,9 @@ export const MCP_AUTH_TABLE: readonly McpAuthEntry[] = [
  * because guessing is the failure mode this hook exists to prevent.
  */
 export const MCP_AUTH_FALLBACK =
-  'Unrecognised MCP server. Determine whether it holds its OWN token (fix: `/mcp`, reconnect the ' +
-  'server) or reads a credential the machine already has (fix: that tool\'s own login). Do NOT ' +
-  'reach for a different system\'s auth command because it is the one you remember.';
+  'Unrecognised MCP server. The fix depends on whether it holds its own token (fix: `/mcp`, ' +
+  'reconnect the server) or reads a credential the machine already has (fix: that tool\'s own ' +
+  'login). Another system\'s auth command will not help.';
 
 /**
  * The server segment of an MCP tool name: `mcp__<server>__<tool>` → `<server>`.
@@ -151,19 +158,21 @@ export function detectMcpAuthError(
   return (
     `MCP AUTH: ${toolName} returned an authentication error (${entry?.system ?? 'MCP server'}).\n` +
     `  Correct action: ${entry?.reauth ?? MCP_AUTH_FALLBACK}\n` +
-    '  An MCP server\'s credential and the vendor CLI\'s credential are DIFFERENT. Re-running the\n' +
-    '  wrong one succeeds, fixes nothing, and hides the real failure.'
+    '  An MCP server\'s credential and the vendor CLI\'s credential are separate; re-running the\n' +
+    '  wrong login succeeds, fixes nothing, and hides the real failure.'
   );
 }
 
 async function run(): Promise<void> {
   try {
     const input = await readStdin();
-    // `tool_response`, not `tool_result`: the latter is the model-facing content-block name
-    // and is never a hook-input field, so reading it yields undefined forever while looking
-    // like it works.
-    const msg = detectMcpAuthError(input.tool_name, input.tool_response);
-    if (msg) info(msg);
+    // PostToolUseFailure carries `error` (a string). `tool_response`, not `tool_result`, is the
+    // PostToolUse field; `tool_result` is the model-facing block name and never a hook input.
+    const failure = (input as { error?: unknown }).error;
+    const payload = typeof failure === 'string' && failure ? failure : input.tool_response;
+    const msg = detectMcpAuthError(input.tool_name, payload);
+    const event = input.hook_event_name === 'PostToolUse' ? 'PostToolUse' : 'PostToolUseFailure';
+    if (msg) emitContext(event, msg);
   } catch {
     // Silent — never interfere on the post-tool path.
   }

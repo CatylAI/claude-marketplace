@@ -180,8 +180,8 @@ while IFS= read -r event; do
         hl_err "$loc" "matcher must be a string, got: $m_type"
       else
         matcher="$(jq -r --arg e "$event" --argjson i "$i" "$BASE[\$e][\$i].matcher" "$HOOKS_FILE")"
-        if ! hl_in_list "$event" "$HL_TOOL_EVENTS"; then
-          hl_warn "$loc" "matcher \"$matcher\" set on $event, which carries no tool name — it is accepted and then ignored, which reads as a filter that is not there"
+        if hl_in_list "$event" "$HL_NO_MATCHER_EVENTS"; then
+          hl_warn "$loc" "matcher \"$matcher\" set on $event, which has no matcher support — it is accepted and then ignored, which reads as a filter that is not there"
         fi
         if [ -n "$matcher" ] && [ "$matcher" != "*" ]; then
           if printf '%s' "$matcher" | grep -Eq "$LITERAL_MATCHER_RE"; then

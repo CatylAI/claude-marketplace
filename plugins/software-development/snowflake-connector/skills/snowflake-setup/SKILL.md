@@ -1,232 +1,229 @@
 ---
 name: snowflake-setup
+description: "Connects Claude Code to your own Snowflake account through a read-only service user, via the managed MCP server or the snow CLI, and verifies each layer. Use when connecting for the first time, after rotating a key or token, or when a connection fails. Not for queries (use snowflake-querying)."
+when_to_use: "connect to Snowflake, set up the Snowflake MCP server, snowflake connection failing, rotate a Snowflake key or token"
+allowed-tools: Bash(snow connection list), Bash(snow connection test *)
+disallowed-tools: Write, Edit, NotebookEdit
 license: MIT
-description: "Setup wizard for connecting a Claude Code session to your own Snowflake account: finding your account identifier, choosing between key-pair, OAuth and SSO authentication, deciding which role the agent uses and why read-only is the right default, and verifying each layer of the connection separately. Use on first connection, after a credential rotation, or when a Snowflake connection fails and you need to find out which layer broke."
 ---
 
-# Snowflake Setup
+# Snowflake setup
 
-Work through this in order. Each step has a verification, and the verifications are
-deliberately separate: *authentication working* and *the role being able to read anything*
-are different problems with the same symptom if you check them together.
+Work through the steps in order. Each one has its own check, because "authentication works"
+and "the role can read anything" fail with the same symptom when you test them together.
 
-Every value in angle brackets is yours. This skill ships no account identifier, no client
-id, no role name and no secret.
+Every value in angle brackets is yours to supply; this plugin ships no account, user, role or
+secret. Three rules hold throughout:
 
-## Step 1 — find your account identifier
+- **Admin SQL is shown, not run.** Someone with the rights runs the `CREATE` and `GRANT`
+  statements in Snowsight. Present them; do not execute them through the connection.
+- **Anything that prompts for input runs in the user's own terminal**: the openssl passphrase
+  prompts and an interactive `snow connection add`. The Bash tool has no terminal to type into,
+  and a secret typed through it would land in the transcript.
+- **Secrets never pass through the chat.** Not in a message, not on a command line, not in a
+  file Claude prints. Ask the user to confirm a value is set, never to paste it.
 
-Snowflake has two identifier formats and an account URL that contains one of them. Most
-connection errors at this step are a correct credential pointed at a hostname that does
-not exist.
+## Step 1: find the account identifier
 
 | Form | Looks like | Notes |
 | --- | --- | --- |
-| **Organization + account name** (preferred) | `<orgname>-<account_name>` | The current form. Stable across region moves. |
-| **Account locator** (legacy) | `<locator>.<region>.<cloud>` | Still accepted in many places; some tools require one form or the other. |
+| Organization + account name (preferred) | `<orgname>-<account_name>` | Stable across region moves |
+| Account locator (legacy) | `<locator>.<region>.<cloud>` | Some tools accept only one form |
 
-Three ways to get it, in order of reliability:
+Copy it from Snowsight's account selector (the option to copy the account identifier or URL),
+or take the part of your login URL before `.snowflakecomputing.com`. Most failures at this step
+are a correct credential pointed at a hostname that does not exist.
 
-1. **From Snowsight.** Open the account selector in the bottom-left, hover your account,
-   and use the option to copy the account identifier or the account URL. This is
-   authoritative — it is what your account actually is, not what someone remembered.
-2. **From the URL you already log into.** An account URL has the shape
-   `https://<account-identifier>.snowflakecomputing.com`. The part before
-   `.snowflakecomputing.com` is what most connectors want.
-3. **From a session you already have**, in a worksheet or `snow sql`:
+## Step 2: choose the path
 
-   ```sql
-   SELECT CURRENT_ACCOUNT()  AS account_locator,
-          CURRENT_REGION()   AS region,
-          CURRENT_ROLE()     AS role,
-          CURRENT_WAREHOUSE() AS warehouse;
-   ```
-
-Write the identifier down once, in the connection config — not in a repository, not in a
-skill, not in a chat message that gets pasted somewhere else later.
-
-## Step 2 — choose an authentication method
-
-| Method | Good for | Trade-offs |
+| Path | Auth | Use when |
 | --- | --- | --- |
-| **Key-pair** | Automation, CI, an agent that must run unattended | No browser, no session expiry to babysit, rotatable by adding a second key before removing the first. You are now responsible for a private key file: it must be passphrase-encrypted and it must never be committed. Best default for an agent. |
-| **OAuth** (an integration in your account, or an external provider) | Human-in-the-loop use where the agent should act as *you*, with your grants and your audit trail | Short-lived tokens, no long-lived secret on disk, and the token carries a role. Costs a one-time admin setup — a security integration, a client id and secret, a redirect URI — and a re-authentication whenever the refresh token lapses. |
-| **SSO / external browser** | Interactive sessions on a laptop where your organisation already federates identity | Simplest to start, inherits your organisation's MFA. Requires a browser at connect time, so it is unsuitable for anything unattended, and the session expires mid-task. |
-| **Password** | Nothing, in practice | A long-lived reusable secret. Some accounts disable it outright, and where it works it should still be treated as the fallback of last resort. |
+| **Managed MCP server** (default) | Programmatic access token (PAT) restricted to the agent role | Your account can host a Snowflake-managed MCP server. No credential file on disk; the token sits in Claude Code's secure storage. |
+| **`snow` CLI** (fallback) | Key-pair (`SNOWFLAKE_JWT`) | No managed MCP server is available, or you need CLI features. |
+| `snow` CLI, interactive | SSO (`externalbrowser`) | You, at a terminal, occasionally. Needs a browser at connect time, so not for unattended work. |
 
-Choosing, in one line each:
+Avoid password auth: it is a long-lived reusable secret. OAuth is supported by the managed MCP
+server; follow Snowflake's MCP server documentation for it, as it is not covered here.
 
-- An agent that runs on its own → **key-pair**.
-- An agent acting on your behalf, interactively, where per-user audit matters → **OAuth**.
-- You, at a terminal, occasionally → **SSO**.
+## Step 3: create the warehouse, role and service user (admin runs this)
 
-Auth method availability and configuration change; confirm the current options and required
-parameters against your account's documentation before building anything around one.
-
-### If you chose key-pair
-
-Generate an encrypted private key and its public half. Use a passphrase — an unencrypted
-private key on a laptop is a password file with extra steps:
-
-```bash
-openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out snowflake_key.p8
-openssl rsa -in snowflake_key.p8 -pubout -out snowflake_key.pub
-chmod 600 snowflake_key.p8
-```
-
-Register the public key on your user. The value is the base64 body **without** the
-`-----BEGIN PUBLIC KEY-----` / `-----END PUBLIC KEY-----` lines and without newlines:
+Give the agent its own identity and its own small warehouse. A dedicated `TYPE = SERVICE` user
+keeps the agent's defaults off your own login, and a role with only `USAGE` and `SELECT` turns a
+misread instruction into a permissions error instead of a changed table.
 
 ```sql
-ALTER USER <your_user> SET RSA_PUBLIC_KEY='<public key body>';
+USE ROLE SYSADMIN;
+CREATE WAREHOUSE IF NOT EXISTS <WAREHOUSE>
+  WAREHOUSE_SIZE = 'XSMALL'
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE
+  STATEMENT_TIMEOUT_IN_SECONDS = 300
+  STATEMENT_QUEUED_TIMEOUT_IN_SECONDS = 120;
 
--- Confirm it landed; the fingerprint is what the server will match against
-DESC USER <your_user>;
-```
-
-To rotate without downtime, set `RSA_PUBLIC_KEY_2` to the new key, switch the client over,
-verify, then clear the old one. Store the private key and its passphrase in your platform
-keychain or secrets manager — see `dev-standards` → `secrets-management`.
-
-### If you chose OAuth
-
-Your account admin creates a security integration and gives you a **client id**, a **client
-secret** and the **redirect URI** the integration will accept. The client secret is a
-credential: keychain or secrets manager, never a repository.
-
-Two details that account for most OAuth failures:
-
-- **The scope carries the role.** Tokens minted under a different role than you expect will
-  authenticate successfully and then fail every query with a permissions error. If the
-  connector lets you request a role in the scope, request the one you intend to use.
-- **The redirect URI must match exactly**, port included. If you change the local callback
-  port on your side, the integration has to be updated too.
-
-## Step 3 — decide which role the agent uses
-
-**Default to a purpose-built read-only role.** Not `ACCOUNTADMIN`, not `SYSADMIN`, and not
-your own role if your own role can write.
-
-The reasoning is the same as for any other automated identity, with one Snowflake-specific
-sharpening: an agent composes SQL from natural language, and natural language does not
-reliably distinguish "show me" from "change". A role that cannot write turns a whole class
-of misunderstanding into an error message instead of an incident. It also bounds cost —
-a role with usage on one small warehouse cannot spin up the big one.
-
-A minimal shape, run by someone who holds the rights to run it:
-
-```sql
 USE ROLE USERADMIN;
 CREATE ROLE IF NOT EXISTS <AGENT_ROLE>;
+CREATE USER IF NOT EXISTS <AGENT_USER>
+  TYPE = SERVICE
+  DEFAULT_ROLE = <AGENT_ROLE>
+  DEFAULT_WAREHOUSE = <WAREHOUSE>
+  DEFAULT_SECONDARY_ROLES = ();
 
 USE ROLE SECURITYADMIN;
 GRANT USAGE ON WAREHOUSE <WAREHOUSE> TO ROLE <AGENT_ROLE>;
-GRANT USAGE ON DATABASE  <DATABASE>  TO ROLE <AGENT_ROLE>;
-GRANT USAGE ON SCHEMA    <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
-GRANT SELECT ON ALL TABLES    IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
-GRANT SELECT ON ALL VIEWS     IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
+GRANT USAGE ON DATABASE <DATABASE> TO ROLE <AGENT_ROLE>;
+GRANT USAGE ON SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
+GRANT SELECT ON ALL TABLES IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
+GRANT SELECT ON ALL VIEWS IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
 GRANT SELECT ON FUTURE TABLES IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA <DATABASE>.<SCHEMA> TO ROLE <AGENT_ROLE>;
+GRANT ROLE <AGENT_ROLE> TO USER <AGENT_USER>;
+GRANT ROLE <AGENT_ROLE> TO ROLE SYSADMIN;
 
-GRANT ROLE <AGENT_ROLE> TO USER <your_user>;
-ALTER USER <your_user> SET DEFAULT_ROLE = <AGENT_ROLE>;
-ALTER USER <your_user> SET DEFAULT_WAREHOUSE = <WAREHOUSE>;
+-- Session parameters set on the user apply to every session, including each separate
+-- `snow sql` call and every MCP request, where ALTER SESSION would not carry over.
+ALTER USER <AGENT_USER> SET
+  QUERY_TAG = 'agent/<purpose>'
+  STATEMENT_TIMEOUT_IN_SECONDS = 300;
 ```
 
-Notes that matter:
+Why each piece matters:
 
-- **`FUTURE` grants are the difference between a role that keeps working and one that
-  silently stops** as new tables appear. Without them, tomorrow's table is invisible and
-  the failure reads as "no such table".
-- **Set a default role.** A session that falls back to `PUBLIC` authenticates fine and then
-  cannot see anything, which is the single most common "it connected but nothing works"
-  report.
-- **Set a default warehouse too.** With none, every query fails with no warehouse selected
-  rather than with anything descriptive.
-- `USAGE` on a warehouse lets the role *run* queries on it; it does not let the role resize
-  it. That is the boundary you want.
+- **The warehouse is created first**, as SYSADMIN, because the grants name it and SECURITYADMIN
+  cannot create warehouses.
+- **`FUTURE` grants** keep the role working as tables and views are added. Without them a new
+  object reads as "does not exist".
+- **Secondary roles off.** With secondary roles active, a session can use the user's other roles
+  too, which would bring back write access. `DEFAULT_SECONDARY_ROLES = ()` turns them off; the
+  CLI connection below also passes `--secondary-roles NONE`. If the account rejects the empty
+  list, check the current `CREATE USER` reference, then confirm with `DESC USER` either way.
+- **`USAGE` on a warehouse** lets the role run queries on it but not resize it.
+- **The statement timeout** is a cost ceiling per query. When the user and the warehouse both set
+  one, the lower applies. A resource monitor on the warehouse adds a monthly ceiling.
 
-### The warehouse the agent uses
+## Step 4a: managed MCP server (default)
 
-Give the agent its own small warehouse rather than sharing the analytics one. It makes
-cost attributable, and it caps the damage:
+1. **Server object.** An admin creates a Snowflake-managed MCP server in a schema with a SQL
+   execution tool (type `SYSTEM_EXECUTE_SQL`) and grants the agent role access to it. Take the
+   exact `CREATE MCP SERVER` syntax and the privilege to grant from Snowflake's current
+   "Snowflake-managed MCP server" documentation. That tool runs any SQL the caller's role
+   allows, which is why Step 3's role is read-only.
+2. **URL.** The endpoint has the shape
+   `https://<orgname>-<account_name>.snowflakecomputing.com/api/v2/databases/<DATABASE>/schemas/<SCHEMA>/mcp-servers/<SERVER_NAME>`.
+   Confirm it against the Snowflake documentation for your account.
+3. **Token.** The user generates a PAT for `<AGENT_USER>` in Snowsight, restricted to
+   `<AGENT_ROLE>`, with a short expiry. Snowsight shows the secret once; it goes straight into the
+   plugin setting in the next step and nowhere else. Snowflake may require a network policy on the
+   user before it accepts a PAT (unverified; check the PAT documentation if authentication fails).
+4. **Plugin settings.** Claude Code asks for `snowflake_mcp_url` and `snowflake_pat` when the
+   plugin is enabled. `snowflake_mcp_url` can be changed later in `/config`. `snowflake_pat` is a
+   sensitive field and does not appear in `/config`; to replace it, disable and re-enable the
+   plugin in `/plugin` to get the prompt again (unverified). Claude Code keeps the token in the
+   macOS Keychain, or `~/.claude/.credentials.json` elsewhere, never in `settings.json`, and
+   substitutes both values into the plugin's `.mcp.json`. Until the URL is set, `/mcp` shows
+   `snowflake` as `not configured`; with a URL and a missing or wrong token, it shows a failed
+   connection. Start a new session after setting them.
 
-```sql
-CREATE WAREHOUSE IF NOT EXISTS <WAREHOUSE>
-  WAREHOUSE_SIZE = 'XSMALL'
-  AUTO_SUSPEND   = 60      -- seconds of idle before it stops billing
-  AUTO_RESUME    = TRUE
-  INITIALLY_SUSPENDED = TRUE;
+The server's tools appear as `mcp__plugin_snowflake-connector_snowflake__<tool>`. Copy the exact
+names from `/mcp` before writing any permission rule or hook for them. For wiring questions beyond
+this, see `claude-craft:mcp-integration`.
 
-ALTER WAREHOUSE <WAREHOUSE> SET STATEMENT_TIMEOUT_IN_SECONDS = 300;
-```
+## Step 4b: `snow` CLI with key-pair (fallback)
 
-A statement timeout is a cost control, not a patience setting: it is the ceiling on what a
-single runaway query can spend. Add a resource monitor on top if your account admin will —
-that is the ceiling on what the whole warehouse can spend in a month.
-
-## Step 4 — configure the client
-
-For the Snowflake CLI, add a named connection and let the tool own the config file rather
-than hand-editing it:
+**The user runs this in their own terminal**, because both openssl commands prompt for the key's
+passphrase. `umask 077` makes the files private from the moment they are created, and the
+parentheses keep it from changing the rest of that terminal session:
 
 ```bash
-snow connection add
-snow connection list
+(
+  umask 077
+  mkdir -p ~/.snowflake/keys
+  openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake/keys/<AGENT_USER>.p8
+  openssl rsa -in ~/.snowflake/keys/<AGENT_USER>.p8 -pubout -out ~/.snowflake/keys/<AGENT_USER>.pub
+)
 ```
 
-It writes `~/.snowflake/config.toml`. Treat that file as sensitive: `chmod 600`, never in a
-repository, and if it holds a password or a private key path, the same rules apply as to
-any other credential file.
-
-If you are wiring an **MCP server** instead, the configuration will need, at minimum: your
-account identifier, the auth method and its parameters, and the role and warehouse to use.
-Every one of those is account-specific. Get the exact field names and the endpoint shape
-from the server's own current documentation and fill them in yourself — a connector
-configuration copied from an example is a connector pointed at somebody else's account.
-
-This plugin deliberately ships **no** `.mcp.json`. A committed server configuration would
-either carry real account values, which must never be published, or carry placeholders
-that register a server guaranteed to fail on startup. Neither is better than writing four
-lines of configuration once, knowingly.
-
-## Step 5 — verify, one layer at a time
-
-Run these in order and stop at the first failure. Each one isolates a different layer, and
-running them together is how a role problem gets mistaken for an auth problem.
+The public half is safe to read. Print its body without the PEM lines, for the admin to register:
 
 ```bash
-# 1. Auth only: can the client establish a session at all?
-snow connection test --connection <name>
+grep -v -- '-----' ~/.snowflake/keys/<AGENT_USER>.pub | tr -d '\n'
 ```
 
 ```sql
--- 2. Identity: is the session who and what you expect?
-SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE();
+ALTER USER <AGENT_USER> SET RSA_PUBLIC_KEY = '<public key body>';
 ```
 
-```sql
--- 3. Metadata read: does the role see the objects? Costs no warehouse compute.
-SHOW TABLES IN SCHEMA <DATABASE>.<SCHEMA>;
+Store the passphrase in the platform keychain or a secrets manager. Before starting Claude Code,
+the user exports it into `PRIVATE_KEY_PASSPHRASE` from that store; the CLI reads that variable,
+so the passphrase stays out of the connection file. Any command Claude runs can read that variable
+too; installing `dev-guardrails` blocks the common ways of printing it.
+
+Then add the connection. This command prompts for nothing and carries no secret, so Claude can run
+it:
+
+```bash
+snow connection add --no-interactive \
+  --connection-name <name> \
+  --account <orgname>-<account_name> \
+  --user <AGENT_USER> \
+  --authenticator SNOWFLAKE_JWT \
+  --private-key-file ~/.snowflake/keys/<AGENT_USER>.p8 \
+  --role <AGENT_ROLE> \
+  --warehouse <WAREHOUSE> \
+  --secondary-roles NONE
 ```
 
-```sql
--- 4. A real, bounded read: does the warehouse actually run a query for this role?
-SELECT * FROM <DATABASE>.<SCHEMA>.<TABLE> LIMIT 10;
-```
+The CLI writes to `~/.snowflake/connections.toml` if that file exists, otherwise to the
+`[connections]` section of `~/.snowflake/config.toml`. It creates the file with mode 0600 and
+refuses one that other users can read. Leave the passwords out of that file, keep it out of any
+repository, and read connections back with `snow connection list`, which masks secret values,
+rather than printing the file.
 
-If step 2 shows a role you did not expect, fix the default role before going further;
-everything after it will fail in a way that points at the wrong thing.
+To rotate the key without downtime, register the new key as `RSA_PUBLIC_KEY_2`, switch the
+connection over, verify, then unset the old one.
 
-## Troubleshooting
+## Step 5: verify, one layer at a time
 
-| Symptom | Almost always |
-| --- | --- |
-| Cannot resolve the host, or a connection timeout | Wrong account identifier — the two identifier forms got mixed, or a region suffix was added to the organization form. Re-copy it from Snowsight. |
-| Authentication succeeds, every query fails on permissions | The session's role. Check `CURRENT_ROLE()`; the token or the default role is `PUBLIC` or something else with no grants. |
-| "No warehouse selected" or similar | No default warehouse on the user, and the connection does not specify one. |
-| A table exists and the role cannot see it | Missing `FUTURE` grants — it was created after the one-time `ALL TABLES` grant. |
-| Key-pair auth rejected | Public key body registered with the PEM header/footer or embedded newlines; or the private key's passphrase is not being supplied. Compare the fingerprint from `DESC USER`. |
-| OAuth authorize page 404s | The provider's discovery endpoint is not where the client assumed. Confirm the exact URL with whoever created the integration rather than guessing a path. |
-| It worked yesterday | A token or SSO session expired, or a key was rotated. Re-authenticate before debugging anything else. |
+Stop at the first failure; each check isolates a different layer.
 
-Once connected, go to `snowflake-querying` before running anything larger than the
-verification query above.
+1. **Transport and auth.** MCP: `/mcp` (or `claude mcp list`) shows `snowflake` connected.
+   CLI: `snow connection test --connection <name>`.
+2. **Identity.** Run
+   `SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_SECONDARY_ROLES(), CURRENT_WAREHOUSE();`
+   through the MCP SQL tool or `snow sql --connection <name> -q "…"`. Expect `<AGENT_USER>`,
+   `<AGENT_ROLE>`, no secondary roles, and `<WAREHOUSE>`.
+3. **Privileges.** `SHOW GRANTS TO ROLE <AGENT_ROLE>;` lists only `USAGE` and `SELECT`.
+4. **Metadata.** `SHOW TABLES IN SCHEMA <DATABASE>.<SCHEMA>;` lists the tables you expect.
+5. **A bounded read.** `SELECT <one_column> FROM <DATABASE>.<SCHEMA>.<TABLE> LIMIT 10;`
+6. **Key fingerprint** (CLI path, if auth failed). Compare the output of
+   `openssl rsa -pubin -in ~/.snowflake/keys/<AGENT_USER>.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64`
+   with `RSA_PUBLIC_KEY_FP` from `DESC USER <AGENT_USER>;`.
+
+If step 2 shows an unexpected role or any secondary role, fix the user defaults before going on.
+Symptom-by-symptom fixes are in [references/troubleshooting.md](references/troubleshooting.md).
+Once connected, use `snowflake-querying` for anything beyond these checks.
+
+## Examples
+
+<example>
+User pastes a string starting with the PAT prefix and says "here's the token, set it up."
+Claude does not repeat or use it: "That token is now in this conversation, so treat it as
+exposed. Revoke it in Snowsight, generate a new one, and enter the new one only in the plugin's
+settings prompt (disable and re-enable the plugin in `/plugin` to get the prompt back). Tell me
+when it is set and I'll check `/mcp`."
+</example>
+
+<example>
+Step 5.1 passes (`snow connection test` succeeds), but step 2 returns `CURRENT_ROLE()` =
+`PUBLIC`. Claude stops there rather than testing grants: the service user's `DEFAULT_ROLE` is
+not `<AGENT_ROLE>`, or the role was never granted to it. It shows the admin
+`GRANT ROLE <AGENT_ROLE> TO USER <AGENT_USER>;` and
+`ALTER USER <AGENT_USER> SET DEFAULT_ROLE = <AGENT_ROLE>;`, then reruns step 2.
+</example>
+
+## Without a checkout or shell
+
+On the web, or when Claude has no shell, give the user the steps and the SQL to run in Snowsight
+and their own terminal, then work from the output they paste back. Whether Cowork prompts for a
+plugin's settings is not documented; there, the user can add the same MCP server URL as a
+claude.ai custom connector instead.

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # review-scan.sh — deterministic, zero-token detection pass for a code review.
 #
-#   review-scan.sh --base <ref> [--source <ref>] [--out .code-review] [--detectors a,b] [...]
+#   review-scan.sh [--base <ref>] [--source <ref>] [--out .code-review] [--detectors a,b] [...]
 #
-#   local : review-scan.sh --base origin/main
+#   local : review-scan.sh                      (base: origin/HEAD, else origin/main, else origin/master)
 #   CI    : review-scan.sh --base "$DIFF_BASE_SHA"
 #
 # THE SAME SCRIPT runs in both places — that is the point. A CI job that used different tooling from
@@ -16,11 +16,13 @@
 #   SCAN.raw.json        normalized AgentContract, before diff-scoping
 #   SCAN.json            the same, with findings not on changed lines removed  <-- what Claude reads
 #   SCAN-SUMMARY.md      counts by tool and severity + the skipped-tool list
+#   SCAN-CONTRACT-DEFECTS.md   only when a finding had to be repaired or dropped (tooling-owner note)
 #
-# Exit status is 0 whenever the scan itself completed, REGARDLESS of what it found. Findings are
-# reported, not enforced; a `review:scan` CI job that failed the pipeline on a MINOR ruff hit would
-# be a different feature, and a scan that failed the pipeline because `tflint` is missing from the
-# image would be actively harmful. Non-zero means the scan could not run at all (bad ref, no git).
+# EXIT STATUS
+#   0  the scan completed, REGARDLESS of what it found. Findings are reported, not enforced; a scan
+#      that failed the pipeline because `tflint` is missing from the image would be actively harmful.
+#   2  the scan could not run or could not write its output: bad flag, bad ref, no git/python3,
+#      unsafe --out, normalize.py or the summary failed. The message on stderr says which.
 #
 # Portable bash 3.2+ / zsh. No dependencies beyond git, python3, and whatever detectors are present.
 
@@ -33,6 +35,10 @@ NORMALIZE="$SELF_DIR/normalize.py"
 # be a second thing to keep correct.
 FILTER="$SELF_DIR/filter-carried-findings.py"
 
+# MAX_FINDINGS is a reading budget, not a measured threshold: SCAN.json is read whole by the semantic
+# agent, and each finding can carry about 1,100 characters (title 300, evidence 200, recommendation
+# 600). Truncation is lowest-severity-first and is recorded in scan_meta, so raising the cap costs
+# the reader tokens and lowering it drops only the least severe findings, visibly.
 BASE="" SOURCE="HEAD" OUT=".code-review" ONLY="" MAX_FINDINGS=150 FAIL_UNDER="" QUIET=false
 
 die() { printf 'review-scan: %s\n' "$*" >&2; exit 2; }
@@ -40,47 +46,72 @@ say() { $QUIET || printf '%s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: review-scan.sh --base <ref> [options]
-  --base <ref>        required; the merge base to diff against (origin/main, or a CI-supplied base SHA)
+usage: review-scan.sh [options]
+  --base <ref>        merge base to diff against. Default: origin/HEAD, then origin/main, then
+                      origin/master. An explicit ref must resolve; it is never substituted.
   --source <ref>      default HEAD
   --out <dir>         default .code-review
   --detectors a,b     only these detectors (default: chosen from the changed-file signals)
   --max-findings N    default 150; truncates lowest-severity-first and records the truncation
   --fail-under N      coverage gate; default: read from pyproject.toml / setup.cfg / .coveragerc
-  --quiet             suppress progress output on stderr
+  --quiet             suppress this script's progress output on stderr
 EOF
   exit 2
 }
 
+# Sourced BEFORE argument parsing, because the parser uses need_value from it. The --out guard lives
+# here too, SOURCED rather than restated: it was once duplicated verbatim across this script and its
+# sibling, in a change whose thesis is that a restated invariant drifts. A missing lib is a hard
+# failure, never a silently-skipped guard.
+. "$SELF_DIR/_lib.sh" || die "cannot source $SELF_DIR/_lib.sh — the --out safety guard is unavailable"
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --base) BASE="${2:-}"; shift 2 ;;
-    --source) SOURCE="${2:-}"; shift 2 ;;
-    --out) OUT="${2:-}"; shift 2 ;;
-    --detectors) ONLY="${2:-}"; shift 2 ;;
-    --max-findings) MAX_FINDINGS="${2:-}"; shift 2 ;;
-    --fail-under) FAIL_UNDER="${2:-}"; shift 2 ;;
+    --base) need_value "$1" $# "${2-}"; BASE="$2"; shift 2 ;;
+    --source) need_value "$1" $# "${2-}"; SOURCE="$2"; shift 2 ;;
+    --out) need_value "$1" $# "${2-}"; OUT="$2"; shift 2 ;;
+    --detectors) need_value "$1" $# "${2-}"; ONLY="$2"; shift 2 ;;
+    --max-findings) need_value "$1" $# "${2-}"; MAX_FINDINGS="$2"; shift 2 ;;
+    --fail-under) need_value "$1" $# "${2-}"; FAIL_UNDER="$2"; shift 2 ;;
     --quiet) QUIET=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
 
-[ -n "$BASE" ] || usage
+# Validate every value BEFORE any detector runs. A bad --max-findings used to surface only when
+# normalize.py's argparse rejected it, after the whole (possibly minutes-long) detector pass.
+case "$MAX_FINDINGS" in
+  ''|*[!0-9]*|0) die "--max-findings must be a positive integer, got '$MAX_FINDINGS'" ;;
+esac
+if [ -n "$FAIL_UNDER" ]; then
+  case "$FAIL_UNDER" in
+    *[!0-9.]*|.|*.*.*) die "--fail-under must be a number, got '$FAIL_UNDER'" ;;
+  esac
+fi
+# Detector names become a path (`detectors/<name>.sh`), so only bare lowercase names are accepted:
+# `--detectors ../x` would otherwise run any script on disk.
+if [ -n "$ONLY" ]; then
+  for _d in $(printf '%s' "$ONLY" | tr ',' ' '); do
+    case "$_d" in
+      *[!a-z]*) die "--detectors: '$_d' is not a detector name (lowercase letters only; see detectors/)" ;;
+    esac
+  done
+  unset _d
+  # `--detectors ,` or `--detectors " "` passes the loop above with no names at all, and then ran no
+  # detector and reported APPROVE over a scan that looked at nothing.
+  [ -n "$(printf '%s' "$ONLY" | tr -d ', ')" ] || die "--detectors: no detector names given (got '$ONLY')"
+fi
+
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
 command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
-git rev-parse --verify --quiet "$BASE" >/dev/null || die "base ref '$BASE' does not resolve"
-git rev-parse --verify --quiet "$SOURCE" >/dev/null || die "source ref '$SOURCE' does not resolve"
+BASE="$(resolve_base "$BASE")" || die "cannot choose a base ref (see above)"
+git rev-parse --verify --quiet "$SOURCE^{commit}" >/dev/null || die "source ref '$SOURCE' does not resolve"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || die "could not cd to repo root $REPO_ROOT"
 
-
-# The --out guard is SOURCED, not restated. It was duplicated verbatim across this script and its
-# sibling — comment and all — in a change whose thesis is that a restated invariant drifts. A missing
-# lib is a hard failure, never a silently-skipped guard.
-. "$SELF_DIR/_lib.sh" || die "cannot source $SELF_DIR/_lib.sh — the --out safety guard is unavailable"
 require_safe_out "$OUT" || die "--out is unsafe (see above); refusing to write a '*' fence"
 RAW="$OUT/raw"
 mkdir -p "$RAW" || die "could not create $RAW"
@@ -99,8 +130,7 @@ mkdir -p "$RAW" || die "could not create $RAW"
 # it tells CI to "drop raw/pytest.json in from CI to ingest", because pytest and coverage need the
 # project env and its services. A blanket `rm -f "$RAW"/*.json` deleted precisely those two files
 # before the detectors ever looked for them, so the documented ingest contract could never fire and
-# `pytest`/`coverage` recorded a skip in every run — including all three benchmark cases, where
-# missing test-quality findings then accounted for 7 of the 10 findings the CI-first arm lost.
+# `pytest`/`coverage` recorded a skip in every run.
 # These files are inputs to this script, not outputs of it.
 INGESTED="pytest.json coverage.json"
 for _f in "$RAW"/*.json "$RAW"/*.skipped; do
@@ -112,25 +142,39 @@ for _f in "$RAW"/*.json "$RAW"/*.skipped; do
   $_keep || rm -f "$_f"
 done
 unset _f _k _keep
+# The contract banner is written only when there is something to say, so a banner left by an EARLIER
+# run would be read as describing this one. Remove it up front; the annotate step rewrites it if needed.
+rm -f "$OUT/SCAN-CONTRACT-DEFECTS.md"
 
 # ---------------------------------------------------------------------------- changed files
 CHANGED="$RAW/.changed"
+DELETED="$RAW/.deleted"
+# The scratch lists go on EVERY exit. `die` exits 2 part-way through, and an rm at the end of the
+# script never ran on those paths, so the lists were left in raw/.
+trap 'rm -f "$CHANGED" "$CHANGED.all" "$CHANGED.unlisted" "$DELETED" "$DELETED.all" "$DELETED.unlisted" "$RAW/.filter.err" 2>/dev/null' EXIT
 # Three-dot: changes on the source side since the merge base, NOT everything that happened on main
 # in the meantime. Two dots here would attribute other people's commits to this change.
-# ACMR excludes deletions (D) — a deleted file cannot be linted — and keeps renames.
-git diff --name-only --diff-filter=ACMR "$BASE...$SOURCE" > "$CHANGED.all" \
+list_changed "$BASE...$SOURCE" "$CHANGED.all" "$CHANGED.unlisted" \
   || die "git diff $BASE...$SOURCE failed"
+# Deleted files, listed apart: nothing can lint them, but a deleted definition breaks every consumer
+# still importing it, and impact.sh is what finds those. Without this list a change that deleted a
+# whole file scanned "0 changed files" and ran no detector at all.
+list_changed "$BASE...$SOURCE" "$DELETED.all" "$DELETED.unlisted" D \
+  || die "git diff $BASE...$SOURCE failed"
+cat "$DELETED.unlisted" >> "$CHANGED.unlisted"
+if [ -s "$CHANGED.unlisted" ]; then
+  # Recorded as a coverage gap, never dropped silently: the detector contract is one path per line,
+  # so a path containing a newline cannot be handed to any detector.
+  printf '%s changed file(s) have a newline in the name and were not scanned: %s\n' \
+    "$(grep -c . "$CHANGED.unlisted")" "$(head -c 200 "$CHANGED.unlisted" | tr '\n' ' ')" \
+    > "$RAW/changed-files.skipped"
+fi
 
-# Generated files: same exclusion list the review skill applies, so both arms of the review see the same
-# file set. Linting a lockfile or a minified bundle produces findings nobody will ever act on.
-#
-# `\.sum$` and the remaining lockfiles were added after a real scan: gitleaks reported a BLOCKER
-# "generic-api-key" on `database/migrations/atlas.sum:10`, which is a base64 migration checksum. It
-# only escaped triage because the diff filter happened to drop it as out-of-hunk — had the change touched
-# that line, the ci arm would have opened with a false BLOCKER. Checksum and lock files are generated
-# high-entropy blobs, which is exactly what a secret scanner is built to flag.
-grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock|\.terraform\.lock\.hcl|\.sum$|dist/|build/|node_modules/|__pycache__/|\.min\.js|\.min\.css|\.generated\.|\.pb\.go|\.snap$|vendor/)' \
-  < "$CHANGED.all" > "$CHANGED" || : > "$CHANGED"
+# Generated files: one list, in _lib.sh, shared with prepare-context.sh so the scanner and the
+# semantic agent agree on which files are even in the change. Linting a lockfile or a minified bundle
+# produces findings nobody will ever act on.
+drop_generated "$CHANGED.all" "$CHANGED"
+drop_generated "$DELETED.all" "$DELETED"
 
 # `grep -c` prints 0 AND exits 1 when nothing matches, so a `|| printf '0'` fallback appends a
 # second zero and the variable becomes "0\n0" — which then breaks the arithmetic below and swallowed
@@ -139,12 +183,40 @@ N_ALL=$(grep -c '[^[:space:]]' "$CHANGED.all" 2>/dev/null)
 N_KEPT=$(grep -c '[^[:space:]]' "$CHANGED" 2>/dev/null)
 N_ALL=${N_ALL:-0}
 N_KEPT=${N_KEPT:-0}
-say "review-scan: $N_KEPT changed file(s) to scan ($((N_ALL - N_KEPT)) generated/excluded)"
+N_DELETED=$(grep -c '[^[:space:]]' "$DELETED" 2>/dev/null)
+N_DELETED=${N_DELETED:-0}
+say "review-scan: $N_KEPT changed file(s) to scan ($((N_ALL - N_KEPT)) generated/excluded), $N_DELETED deleted"
+
+# ---------------------------------------------------------------------------- worktree check
+# Detectors lint the files ON DISK, while the hunk filter diffs BASE...SOURCE. When those are not the
+# same content the findings' line numbers belong to a different file version, and the filter keeps or
+# drops them against the wrong lines. Two ways that happens: SOURCE is not what is checked out, or a
+# changed file has uncommitted edits. Both are stated in SCAN.json and on stderr rather than refused,
+# because reviewing a ref you have not checked out is a legitimate (if lossy) thing to do.
+WORKTREE_NOTE=""
+HEAD_SHA="$(git rev-parse --verify --quiet HEAD 2>/dev/null)" || HEAD_SHA=""
+SOURCE_SHA="$(git rev-parse --verify --quiet "$SOURCE^{commit}")"
+if [ "$HEAD_SHA" != "$SOURCE_SHA" ]; then
+  WORKTREE_NOTE="WORKTREE MISMATCH: the working tree is at $(printf '%.12s' "${HEAD_SHA:-?}") but the scan diffed $SOURCE ($(printf '%.12s' "$SOURCE_SHA")). Detectors lint the files on disk, so findings and their line numbers describe the working tree, not the reviewed ref. Check out $SOURCE and re-run for trustworthy results."
+else
+  _dirty=""
+  git -c core.quotePath=false diff --name-only HEAD > "$RAW/.dirty" 2>/dev/null || : > "$RAW/.dirty"
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    grep -qxF -- "$_f" "$CHANGED" && _dirty="$_dirty $_f"
+  done < "$RAW/.dirty"
+  rm -f "$RAW/.dirty"
+  if [ -n "$_dirty" ]; then
+    WORKTREE_NOTE="WORKTREE MISMATCH: changed file(s) have uncommitted edits:$_dirty. Detectors lint the files on disk, so findings there may cite lines that differ from $SOURCE. Commit or stash and re-run for trustworthy results."
+  fi
+  unset _dirty _f
+fi
+[ -n "$WORKTREE_NOTE" ] && say "  warn: $WORKTREE_NOTE"
 
 # ---------------------------------------------------------------------------- stack signals
 # Deliberately derived from the changed-file list ALONE — never a tree walk. Same case arms as
 # the review skill's stack-detection step so the two paths cannot drift on what counts as "IaC" or "frontend".
-SIG_CODE=false SIG_IAC=false SIG_SHELL=false SIG_WEB=false SIG_MANIFEST=false SIG_ANY=false
+SIG_CODE=false SIG_IAC=false SIG_SHELL=false SIG_WEB=false SIG_MANIFEST=false SIG_POLICY=false SIG_ANY=false
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   SIG_ANY=true
@@ -169,6 +241,14 @@ while IFS= read -r f; do
     .pre-commit-config.yaml|*/.pre-commit-config.yaml) SIG_MANIFEST=true ;;
     .pre-commit-config.yml|*/.pre-commit-config.yml) SIG_MANIFEST=true ;;
   esac
+  # iac-policy's file selection: Terraform, CI pipelines, Makefiles and SQL. Same arms as the
+  # selection in detectors/iac-policy.sh; the two must stay identical, like SIG_MANIFEST and deps.sh.
+  case "$f" in
+    *.tf|*.hcl|*.tfbackend|*.sql) SIG_POLICY=true ;;
+    .github/workflows/*.yml|.github/workflows/*.yaml|*/.github/workflows/*.yml|*/.github/workflows/*.yaml) SIG_POLICY=true ;;
+    .gitlab-ci.yml|*/.gitlab-ci.yml|*.gitlab-ci.yml|.circleci/*.yml|azure-pipelines.yml|bitbucket-pipelines.yml|.buildkite/*.yml) SIG_POLICY=true ;;
+    Jenkinsfile|*/Jenkinsfile|Jenkinsfile.*|*/Jenkinsfile.*|Makefile|*/Makefile|*.mk) SIG_POLICY=true ;;
+  esac
 done < "$CHANGED"
 
 if $SIG_WEB; then
@@ -190,10 +270,15 @@ else
   $SIG_IAC && DETECTORS="$DETECTORS terraform"
   $SIG_SHELL && DETECTORS="$DETECTORS shell"
   $SIG_MANIFEST && DETECTORS="$DETECTORS deps"
+  $SIG_POLICY && DETECTORS="$DETECTORS iac-policy"
   # `comments` follows the source signals rather than a signal of its own: its file list is source
   # files with an unambiguous line-comment token, which is exactly SIG_CODE plus shell and HCL.
   { $SIG_CODE || $SIG_SHELL || $SIG_IAC; } && DETECTORS="$DETECTORS comments"
-  $SIG_ANY && DETECTORS="$DETECTORS secrets impact"
+  if $SIG_ANY; then
+    DETECTORS="$DETECTORS secrets impact"
+  elif [ "$N_DELETED" -gt 0 ]; then
+    DETECTORS="$DETECTORS impact"      # a deletion-only change: consumers of what was removed
+  fi
 fi
 
 if [ -z "${DETECTORS# }" ]; then
@@ -202,8 +287,9 @@ fi
 
 # ---------------------------------------------------------------------------- run detectors
 # impact.sh needs the refs, which are not in the detector argv contract.
-SCAN_BASE="$BASE" SCAN_SOURCE="$SOURCE"
-export SCAN_BASE SCAN_SOURCE
+# SCAN_DELETED names the deleted-files list, for impact.sh, which checks what a deletion removed.
+SCAN_BASE="$BASE" SCAN_SOURCE="$SOURCE" SCAN_DELETED="$DELETED"
+export SCAN_BASE SCAN_SOURCE SCAN_DELETED
 
 for d in $DETECTORS; do
   script="$DETECTOR_DIR/$d.sh"
@@ -259,9 +345,10 @@ if ! $SCOPED; then
   cp "$OUT/SCAN.raw.json" "$OUT/SCAN.json" || die "could not write $OUT/SCAN.json"
 fi
 
-python3 - "$OUT/SCAN.json" "$SCOPED" "$SELF_DIR" <<'PY'
+python3 - "$OUT/SCAN.json" "$SCOPED" "$SELF_DIR" "$WORKTREE_NOTE" <<'PY'
 import json, os, sys
 path, scoped = sys.argv[1], sys.argv[2] == "true"
+worktree_note = sys.argv[4] if len(sys.argv) > 4 else ""
 
 # This is `python3 -`, so sys.path[0] is the CWD — and the CWD here is the REVIEWED repo, not the
 # pipeline. argv[3] is this script's own $SELF_DIR, which makes the ONE contract definition
@@ -273,10 +360,9 @@ from contract import (canon_severity, contract_defects, finding_blocks,
 
 # THE PREDICATE IS IMPORTED, NOT RESTATED. This block used to be a fourth copy of it, kept
 # "byte-identical in intent" by hand. It is now `from contract import ...` above, which is the whole
-# point: a copy that can import has no reason to be a copy. Three copies remain and only because
-# neither of the other two is a process — `agents/review-validator.md` has no `python3` grant and
-# `agent-contracts/SKILL.md` is injected as text — and `scripts/check-predicate-parity.py` executes
-# both against this implementation rather than anyone reading them side by side.
+# point: a copy that can import has no reason to be a copy. No prose copy of the predicate is
+# maintained either: the `dev-standards:agent-contracts` skill gives a one-line summary and points to
+# contract.py, and `agents/review-validator.md` only records judgements.
 _sev = canon_severity
 _blocks = finding_blocks
 _escalates = finding_escalates
@@ -299,6 +385,9 @@ meta["diff_scoped"] = scoped
 if _FLOOR_NOTE:
     meta.setdefault("notes", []).append(_FLOOR_NOTE)
     sys.stderr.write(f"review-scan: {_FLOOR_NOTE}\n")
+if worktree_note:
+    meta["worktree_matches_source"] = False
+    meta.setdefault("notes", []).append(worktree_note)
 if not scoped:
     meta.setdefault("notes", []).append(
         "DIFF SCOPING DID NOT RUN — findings may be pre-existing debt outside this change. "
@@ -336,7 +425,8 @@ if _repairs or _rejected:
     meta.setdefault("notes", []).append(
         f"CONTRACT: {len(_repairs)} finding(s) repaired onto the canonical keys, "
         f"{len(_rejected)} dropped as contentless. This is a defect in the review pipeline's "
-        "own output, not in the reviewed change — see .code-review/CONTRACT-DEFECTS.md.")
+        "own output, not in the reviewed change — see "
+        + os.path.join(os.path.dirname(path), "SCAN-CONTRACT-DEFECTS.md") + ".")
 
 # Recount after filtering: the pre-filter metrics would overstate every severity bucket, and the
 # verdict is derived from them.
@@ -385,11 +475,12 @@ else:
 with open(path, "w") as fh:
     json.dump(doc, fh, indent=2)
 
-# The CONTRACT BANNER. The review skill already tells a reader to "see the contract
-# banner" and nothing had ever written one. Written only when there is something to say, so a
-# clean run leaves no file behind for the next run to misread as current.
+# The scanner's CONTRACT BANNER. Named SCAN-CONTRACT-DEFECTS.md, not CONTRACT-DEFECTS.md: that name
+# belongs to `contract.py finalize`, which writes the review-wide banner after the validator, and a
+# scanner banner under the same name would be read as the review's. Written only when there is
+# something to say; a banner from an earlier run is removed at the top of this script.
 if _repairs or _rejected:
-    _banner = os.path.join(os.path.dirname(path), "CONTRACT-DEFECTS.md")
+    _banner = os.path.join(os.path.dirname(path), "SCAN-CONTRACT-DEFECTS.md")
     with open(_banner, "w") as fh:
         fh.write("# Contract defects — for the TOOLING OWNER, not the change author\n\n")
         fh.write("These are defects in the review pipeline's own output. They do not affect the "
@@ -456,13 +547,17 @@ if meta.get("truncated_findings"):
       "inside the finding cap.\n")
 for n in meta.get("notes") or []:
     A(f"> {n}\n")
-with open(out_path, "w") as fh:
-    fh.write("\n".join(L))
+try:
+    with open(out_path, "w") as fh:
+        fh.write("\n".join(L))
+except OSError as exc:
+    sys.exit(f"could not write {out_path}: {exc}")
 print(f"{m.get('total', 0)} finding(s): "
       f"{m.get('blocker', 0)} blocker / {m.get('major', 0)} major / "
       f"{m.get('minor', 0)} minor / {m.get('nit', 0)} nit")
 PY
+# Was unchecked: a summary that failed to write still ended in "wrote ... SCAN-SUMMARY.md" and exit 0.
+[ $? -eq 0 ] || die "could not write $OUT/SCAN-SUMMARY.md"
 
-rm -f "$CHANGED.all" "$RAW/.filter.err" 2>/dev/null
 say "review-scan: wrote $OUT/SCAN.json and $OUT/SCAN-SUMMARY.md"
 exit 0

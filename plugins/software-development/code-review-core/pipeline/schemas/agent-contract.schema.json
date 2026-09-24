@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/CatylAI/claude-marketplace/schemas/agent-contract.schema.json",
   "title": "Agent contract document",
-  "description": "The .code-review/{CATEGORY}.json contract a gate agent writes. GENERATED from contract.py's constants by contract_schema(); do not hand-edit. Regenerate with scripts/check-contract-schema.sh --write.",
+  "description": "The .code-review/{CATEGORY}.json contract a gate agent writes. GENERATED from contract.py's constants by contract_schema(); do not hand-edit. Regenerate with python3 pipeline/contract.py schema --write.",
   "type": "object",
   "required": [
     "agent",
@@ -143,6 +143,57 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "blocking_floor": {
+      "enum": [
+        "BLOCKER",
+        "MAJOR",
+        "MINOR",
+        "NIT"
+      ]
+    },
+    "incomplete_inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "input",
+          "problem"
+        ],
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "problem": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "contract_health": {
+      "type": "object",
+      "required": [
+        "repaired",
+        "rejected",
+        "repairs",
+        "defects"
+      ],
+      "properties": {
+        "repaired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repairs": {
+          "type": "array"
+        },
+        "defects": {
+          "type": "array"
+        }
       }
     }
   },

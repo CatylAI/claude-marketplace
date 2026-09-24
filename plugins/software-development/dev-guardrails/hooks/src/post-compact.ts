@@ -1,39 +1,46 @@
-// PreCompact hook: restate the session's active working state so compaction cannot lose it.
+// SessionStart hook, matcher `compact`: restate the working state right after compaction.
 //
-// REGISTERED ON PreCompact, WHICH IS THE ONLY COMPACTION EVENT CLAUDE CODE EXPOSES. There is no
-// post-compaction event to hook, and that turns out to be the better place anyway: output emitted
-// HERE is part of the material the compaction summarises, so the facts survive into the summary
-// instead of being appended after it.
+// WHY SessionStart AND NOT PreCompact. A PreCompact hook's stdout on exit 0 goes to the debug log
+// only; it never reaches the model or the summary. After a compaction Claude Code fires
+// SessionStart with `source: "compact"`, and SessionStart is one of the events whose plain stdout
+// is added to Claude's context. So this is the hook point where carried-forward facts land in the
+// new context. (PostCompact exists too, but it has no context output.)
 //
-// Everything printed is CHEAP AND CURRENT — read fresh from git at the moment it runs, rather
-// than recovered from the transcript that is about to be discarded.
+// Everything printed is read fresh from git now, not recovered from the transcript that was just
+// summarised. Deliberately a subset of session-start: branch, ticket key, uncommitted count, on
+// one line. Repo-health checks belong to a session's opening, not to every compaction.
 //
-// Deliberately a subset of session-start: branch, ticket key, uncommitted count. No repo-health
-// checks, no worktree enumeration. Those belong to a session's opening moments; repeating them at
-// every compaction would be noise in the middle of ongoing work.
+// FAILURE MODE: fail open, silently. It exits 0 on any error with nothing on stdout; losing one
+// carry-forward line is cheaper than a hook-error notice in the middle of ongoing work.
 
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { context } from './lib/output.ts';
 import { getBranch, isGitRepo } from './lib/git.ts';
 import { exec } from './lib/shell.ts';
-import { extractTicket } from './pre-bash.ts';
+import { extractTicket } from './lib/ticket.ts';
 
-context('=== Carry Forward Through Compaction ===');
-context('');
-
-if (isGitRepo()) {
-  const branch = getBranch();
-  context(`Branch: ${branch}`);
-
-  const ticket = extractTicket(branch);
-  if (ticket) context(`Ticket: ${ticket}`);
-
-  const porcelain = exec('git status --porcelain', { timeout: 5000 });
-  if (porcelain) {
-    const count = porcelain.split('\n').filter((l) => l).length;
-    if (count > 0) context(`Uncommitted: ${count} file(s)`);
-  }
-  context('');
+/** The single carry-forward line. Pure, so the wording is testable without a repository. */
+export function formatCarryForward(branch: string, ticket: string | null, uncommitted: number): string {
+  const parts = [`Branch: ${branch}`];
+  if (ticket) parts.push(`ticket ${ticket}`);
+  if (uncommitted > 0) parts.push(`${uncommitted} uncommitted file(s)`);
+  return `Carried forward after compaction: ${parts.join(' · ')}`;
 }
 
-context('=== End Carry Forward ===');
-process.exit(0);
+function run(): void {
+  if (!isGitRepo()) return;
+  const branch = getBranch();
+  const porcelain = exec('git status --porcelain', { timeout: 5000 });
+  const count = porcelain ? porcelain.split('\n').filter((l) => l).length : 0;
+  context(formatCarryForward(branch, extractTicket(branch), count));
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    run();
+  } catch {
+    // Fail open: see the header.
+  }
+  process.exit(0);
+}

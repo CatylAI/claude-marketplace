@@ -1,29 +1,28 @@
 """contract.py — the ONE definition of the finding contract: what makes a finding USABLE, and
 what makes a usable finding BLOCK.
 
-Both halves live here on purpose. An earlier version of this module carried only the content half
-and left the blocking predicate in `normalize.py`, which meant the file named "contract" held half
-a contract while the half with the most duplicates stayed outside it. Consolidating them cut the
-in-repo copy count from four to three: this module is the implementation, and the only remaining
-copies are the two RESTATEMENTS that cannot import anything —
-`agents/review-validator.md` (no `python3` grant, so there is no process to import into) and the
-`agent-contracts` skill body in the standards plugin (injected as text). `review-scan.sh` used to
-be a fourth copy and now imports instead.
+Both halves live here on purpose, and this module is the only implementation of either. No prose
+copy of the blocking predicate is maintained anywhere: the `dev-standards:agent-contracts` skill
+documents the finding keys for the agents that fill them, gives a one-line summary of the verdict,
+and points to `finding_blocks`, `finding_escalates` and `rollup_verdict` here as the definition.
+`review-scan.sh` and `normalize.py` import this module, and `agents/review-validator.md` only
+records judgements in VALIDATOR-DECISIONS.json, from which `finalize` (below) computes everything
+else.
 
-No shebang: this module is imported, never executed.
+Imported by the pipeline, and also runnable for one subcommand:
 
-WHY THIS LIVES BESIDE THE PIPELINE AND NOT IN THE STANDARDS PLUGIN. The dependency direction that
-argument rests on is real — `agent-contracts` is the canonical CONTRACT and this pipeline is its
-consumer, and the dependency is declared, so the move would not introduce undeclared coupling. It
-is declined for a different, measured reason: a VENDORED layout separates the two trees with no
-stable relative path between them. Vendored into a CI image, `normalize.py` lands at
-`scripts/review/normalize.py` while `agent-contracts/SKILL.md` lands at
-`.claude/skills/agent-contracts/SKILL.md` — a different relationship from the source tree's
-`pipeline/` vs the standards plugin's `skills/agent-contracts/`. Any `sys.path` computation that
-resolved in the repo would break in CI, and it would break at import time, mid-review. So the
-executable sits beside the code that imports it, and `agent-contracts/SKILL.md` carries the
-RESTATEMENT that keeps the canonical document self-contained. A predicate-parity check is what
-stops those two drifting, which is the guarantee co-location would have bought.
+    python3 contract.py finalize --dir .code-review [--floor MAJOR]
+
+`finalize` is the deterministic last step of a review. It reads the agent artifacts plus the
+validator's decisions and writes VALIDATED.json, VALIDATED.md and (only when there are contract
+defects) CONTRACT-DEFECTS.md. Exit 0 when written; exit 2 when a required input is missing or
+unparseable, in which case it still writes an INCOMPLETE VALIDATED.json naming that input.
+
+WHY THIS LIVES BESIDE THE PIPELINE AND NOT IN THE STANDARDS PLUGIN. A vendored layout separates
+the two trees with no stable relative path between them: vendored into a CI image, `normalize.py`
+lands in one directory and the standards skills in another, so any `sys.path` computation that
+resolved in the repo would break at import time, mid-review. The executable therefore sits beside
+the code that imports it, and the skill defers to it rather than copying it.
 
 Why this file exists. Nine real `VALIDATED.json` artifacts were recovered from job disk and ONE
 satisfied the ten-key `required` array in `agent-contracts`. That array is prose handed to a
@@ -46,9 +45,8 @@ before repairing would silence 8 of the 9.
 
 TWO TIERS, AND THE SPLIT IS DELIBERATE
 --------------------------------------
-`CONTRACT_REQUIRED` is the full ten-key contract. It is what the *authoring* gate enforces on
-worked examples in agent prompts (`scripts/check-agent-json-contracts.sh`), because an example is
-a template and a template should be complete.
+`CONTRACT_REQUIRED` is the full ten-key contract. It is the standard for worked examples in agent
+prompts, because an example is a template and a template should be complete.
 
 `ACTIONABLE_REQUIRED` is the four keys without which a finding cannot be acted on at all, and it
 is what the *blocking* predicate gates on. The two differ on purpose, and the reason is measured:
@@ -64,8 +62,11 @@ So: a finding missing `recommendation` is incomplete and is REPORTED as such; a 
 
 from __future__ import annotations
 
+import argparse
+import datetime
+import json
 import os
-import re
+import sys
 
 BLOCKER, MAJOR, MINOR, NIT = "BLOCKER", "MAJOR", "MINOR", "NIT"
 
@@ -93,7 +94,7 @@ UNRANKABLE_SORT_POSITION = len(SEVERITY_RANK)
 # job so it gets refactored") is the lowest tier that can honestly block.
 DEFAULT_BLOCKING_FLOOR = MINOR
 
-# The full contract, per the `agent-contracts` skill ("interface Finding").
+# The full contract. `dev-standards:agent-contracts` describes these keys for the agents that fill them.
 CONTRACT_REQUIRED = (
     "id", "severity", "category", "location", "title",
     "evidence", "recommendation", "ux_impact", "in_diff", "confidence",
@@ -305,10 +306,8 @@ def normalize_finding(f, index=None):
     # characters reached the artifact untruncated — against the `"maxLength": TITLE_MAX` this module's
     # own `finding_schema()` declares, so contract.py published a bound it did not enforce.
     #
-    # The message interpolates TITLE_MAX rather than spelling 300, which makes the constant itself
-    # comparable: a restatement that hardcodes `[:300]` while this file's TITLE_MAX moves now emits a
-    # different `repairs` string, so `check-predicate-parity.py` reports it. A numeric constant read by
-    # two copies is otherwise invisible to a matrix whose axes are only the alias NAMES.
+    # The message interpolates TITLE_MAX rather than spelling 300, so the `repairs` string and the
+    # schema's `maxLength` both follow the constant when it moves.
     if isinstance(out.get("title"), str) and len(out["title"]) > TITLE_MAX:
         out["title"] = out["title"][:TITLE_MAX]
         repairs.append(f"title truncated to {TITLE_MAX}")
@@ -318,9 +317,8 @@ def normalize_finding(f, index=None):
     # blocking. Coerce the unambiguous spellings and record it; anything else stays a defect.
     # `sorted(_BOOLS)`, not bare set iteration. `_BOOLS` is a frozenset of strings, so its iteration
     # order depends on PYTHONHASHSEED and therefore differs BETWEEN PROCESSES — which made the
-    # `repairs` list order for a finding carrying both booleans as strings non-deterministic, and made
-    # it uncomparable to the restatement `check-predicate-parity.py` now executes in a child
-    # interpreter. Sorting costs nothing and makes an audit trail reproducible.
+    # `repairs` list order for a finding carrying both booleans as strings non-deterministic between
+    # runs. Sorting costs nothing and makes an audit trail reproducible.
     for k in sorted(_BOOLS):
         v = out.get(k)
         if isinstance(v, str):
@@ -408,8 +406,11 @@ def sort_rank(value) -> int:
     return SEVERITY_RANK[canon] if canon else UNRANKABLE_SORT_POSITION
 
 
-def floor_diagnostics():
-    """Resolve CODE_REVIEW_BLOCKING_FLOOR to (rank, note). `note` is None when nothing is odd.
+def floor_diagnostics(raw=None):
+    """Resolve the blocking floor to (rank, note). `note` is None when nothing is odd.
+
+    `raw` is an explicit floor (finalize's `--floor`). When it is None the value comes from
+    CODE_REVIEW_BLOCKING_FLOOR, so every existing caller that passes nothing behaves as before.
 
     Two configured values are accepted-but-not-meaningful, and saying so is the point of this
     function existing rather than just returning a rank. `NIT` (and its deprecated spelling `INFO`)
@@ -420,7 +421,9 @@ def floor_diagnostics():
     to the strict default rather than the permissive one, and that is also worth a line: a typo in
     a gate's configuration must not silently widen it.
     """
-    raw = str(os.environ.get("CODE_REVIEW_BLOCKING_FLOOR") or "").strip().upper()
+    if raw is None:
+        raw = os.environ.get("CODE_REVIEW_BLOCKING_FLOOR")
+    raw = str(raw or "").strip().upper()
     if not raw:
         return SEVERITY_RANK[DEFAULT_BLOCKING_FLOOR], None
     canon = canon_severity(raw)
@@ -442,11 +445,12 @@ def blocking_floor_rank() -> int:
     return floor_diagnostics()[0]
 
 
-def _in_scope_at_floor(f: dict) -> bool:
+def _in_scope_at_floor(f: dict, floor_rank=None) -> bool:
     """Shared body of blocks/escalates: contentful, in-diff, rankable, not a NIT, at/below floor.
 
     Split out so the two predicates cannot drift on the parts they must agree about — notably the
     NIT short-circuit sitting ABOVE the ux_impact disjunct, and the contract gate above everything.
+    `floor_rank` overrides the environment's floor (finalize passes its resolved `--floor`).
     """
     if contract_defects(f):
         # CONTENTLESS -> blocks nothing and escalates nothing. Not a silent pass:
@@ -476,19 +480,21 @@ def _in_scope_at_floor(f: dict) -> bool:
         return False
     if f.get("ux_impact"):
         return True
-    return SEVERITY_RANK[canon] <= blocking_floor_rank()
+    if floor_rank is None:
+        floor_rank = blocking_floor_rank()
+    return SEVERITY_RANK[canon] <= floor_rank
 
 
-def finding_blocks(f: dict) -> bool:
+def finding_blocks(f: dict, floor_rank=None) -> bool:
     """True when a finding should BLOCK the merge, per the configured floor."""
-    # `or "HIGH"` (not get's default) so an explicit null coalesces to HIGH, matching the validator
-    # and the CI-side predicate. get's default fires only on an ABSENT key.
+    # `or "HIGH"` (not get's default) so an explicit null coalesces to HIGH, matching the CI-side
+    # predicate. get's default fires only on an ABSENT key.
     if str(f.get("confidence") or "HIGH").upper() != "HIGH":
         return False   # -> ESCALATE, see finding_escalates()
-    return _in_scope_at_floor(f)
+    return _in_scope_at_floor(f, floor_rank)
 
 
-def finding_escalates(f: dict) -> bool:
+def finding_escalates(f: dict, floor_rank=None) -> bool:
     """True when a finding cannot block only because certainty is missing.
 
     Drives `verdict: "INCOMPLETE"` — not an assertion that a defect exists, an assertion that a
@@ -503,269 +509,16 @@ def finding_escalates(f: dict) -> bool:
         return False
     if str(f.get("confidence") or "HIGH").upper() == "HIGH":
         return False
-    return _in_scope_at_floor(f)
+    return _in_scope_at_floor(f, floor_rank)
 
 
-def rollup_verdict(findings) -> str:
+def rollup_verdict(findings, floor_rank=None) -> str:
     """REQUEST_CHANGES > INCOMPLETE > APPROVE, in that precedence."""
-    if any(finding_blocks(f) for f in findings):
+    if any(finding_blocks(f, floor_rank) for f in findings):
         return "REQUEST_CHANGES"
-    if any(finding_escalates(f) for f in findings):
+    if any(finding_escalates(f, floor_rank) for f in findings):
         return "INCOMPLETE"
     return "APPROVE"
-
-
-# --- the completion trailer (R1) ---------------------------------------------------------------
-#
-# WHAT PROBLEM THIS SOLVES, AND WHY THE EXISTING POST-CONDITION IS NOT ENOUGH.
-#
-# run-review-phase.sh already asserts a completed phase's artifacts exist, are non-empty, parse,
-# and are not stale (`reviewed_sha` == HEAD). That closes the keystone failure — an agent reporting
-# "Verdict: REQUEST_CHANGES / Full findings: .code-review/VALIDATED.json" with every structured signal
-# green (rc 0, is_error False, stop_reason end_turn, permission_denials []) and NO SUCH FILE.
-#
-# Three things it still cannot see, and each is a real failure mode:
-#
-#   1. WHETHER THE AGENT FINISHED. A run truncated mid-write leaves a file that exists, is
-#      non-empty and parses. Existence cannot distinguish "done" from "stopped halfway".
-#   2. WHETHER THE AGENT'S NARRATIVE MATCHES ITS ARTIFACT. This is the T2 write-path defect: the
-#      report arrives and is FALSE. An agent that says "7 findings" over an artifact holding 2 has
-#      satisfied every existence check while misreporting the outcome.
-#   3. BLOCKED AS AN OUTCOME. An agent that legitimately cannot proceed has no way to say so that a
-#      caller branches on, so silence reads as consent — which agent-sdk.md:112-118 already forbids
-#      in prose ("Never record a NO VERDICT, a partial answer, or silence as a PASS").
-#
-# WHY THERE IS NO SHA256 IN THIS TRAILER, contrary to the plan.
-#
-# The plan specified `ARTIFACT: <path> SHA256: <hash>`. Four of the five gate agents CANNOT COMPUTE
-# ONE. Measured from their frontmatter `tools:` lines:
-#
-#     review-semantic    Read, Write, Grep              no Bash at all
-#     review-testing     Read, Write, Grep              no Bash at all
-#     review-architect   Read, Write, Grep, Glob, Bash(git:*)     git only, no shasum
-#     review-validator   Read, Write, Grep, Glob, Bash(git:*)     git only, no shasum
-#     review-reporter           ... Bash(python3:*) ...         could, but writes no findings artifact
-#
-# So the three agents whose artifacts the gate depends on could not satisfy that grammar. Shipping
-# it anyway is worse than shipping nothing: the agent tries to shell out, the permission layer
-# denies it, and it parks at `stop_reason: tool_use` until the timeout kills it — which is the
-# EXACT failure already paid for once at run-review-phase.sh:478-486 ($5.51 over 907s, no verdict).
-# The alternative is that the model fabricates a plausible hash, which is worse still: a gate
-# comparing a fabricated hash to a real one fails on honest runs and teaches people to disable it.
-#
-# The declared COUNTS do the same job better for the failure that actually happened. A hash proves
-# "a file with this content exists"; a count cross-check proves "the agent's story matches its
-# deliverable", which is defect 2 above and is what the keystone finding was. And every agent can
-# produce it with the tools it already has, because it authored the findings array.
-#
-# The grammar (last non-blank lines of the agent's final message):
-#
-#     REVIEW-TRAILER v1
-#     STATUS: COMPLETE
-#     ARTIFACT: .code-review/VALIDATED.json
-#     FINDINGS: 7
-#     SEVERITIES: BLOCKER=0 MAJOR=2 MINOR=4 NIT=1
-#
-#   ...or, when the agent cannot do its job:
-#
-#     REVIEW-TRAILER v1
-#     STATUS: BLOCKED
-#     BLOCKED-REASON: CONTEXT.json absent — prepare-context.sh did not run
-#
-# Deliberately line-oriented and case-sensitive: it must be trivially greppable from a transcript
-# by a shell caller, and a model reproduces a fixed line shape far more reliably than nested JSON.
-
-TRAILER_MAGIC = "REVIEW-TRAILER v1"
-TRAILER_STATUSES = ("COMPLETE", "BLOCKED")
-
-_TRAILER_SEV_RE = re.compile(r"\b(BLOCKER|MAJOR|MINOR|NIT|INFO)\s*=\s*(\d+)\b")
-
-
-def parse_trailer(text):
-    """Extract the LAST REVIEW-TRAILER block from `text`.
-
-    Returns a dict with keys: status, artifact, findings, severities, blocked_reason, errors.
-    `errors` is a list; a non-empty list means the trailer is unusable. A None return means no
-    trailer was found at all, which the caller must treat as a failed phase — an agent that did not
-    declare an outcome has not reported one, and reading that silence as success is the whole defect
-    this trailer exists to close.
-
-    The LAST block wins on purpose: an agent may quote the grammar while explaining itself, and the
-    real declaration is the one it ends on.
-    """
-    if not text:
-        return None
-    idx = text.rfind(TRAILER_MAGIC)
-    if idx < 0:
-        return None
-
-    out = {"status": None, "artifact": None, "findings": None,
-           "severities": {}, "blocked_reason": None, "errors": []}
-
-    for raw in text[idx + len(TRAILER_MAGIC):].splitlines():
-        line = raw.strip().lstrip(">").strip()          # tolerate a quoted transcript
-        if not line:
-            continue
-        key, _, value = line.partition(":")
-        key, value = key.strip().upper(), value.strip()
-        if key == "STATUS":
-            out["status"] = value.upper()
-        elif key == "ARTIFACT":
-            out["artifact"] = value.strip("`'\" ")
-        elif key == "FINDINGS":
-            try:
-                out["findings"] = int(value)
-            except ValueError:
-                out["errors"].append(f"FINDINGS is not an integer: {value!r}")
-        elif key == "SEVERITIES":
-            for sev, n in _TRAILER_SEV_RE.findall(value):
-                # ACCUMULATE, never overwrite. `INFO` folds onto `NIT`, so a trailer written
-                # `SEVERITIES: NIT=1 INFO=2` means three NITs — assignment silently reported two.
-                canon = SEVERITY_ALIASES.get(sev, sev)
-                out["severities"][canon] = out["severities"].get(canon, 0) + int(n)
-        elif key == "BLOCKED-REASON":
-            out["blocked_reason"] = value
-        else:
-            # An unknown key is not an error, and it is not a STOP either.
-            #
-            # This used to `break`, which made the parser order-dependent in a way nothing declared:
-            # a single stray line between FINDINGS and SEVERITIES ("Note: see above") truncated
-            # parsing before SEVERITIES was read, leaving severities={} — so the per-severity
-            # cross-check silently verified nothing and the trailer still passed. A model that
-            # interleaves one sentence is not a defect worth failing on, but it must not be able to
-            # switch off half the check either.
-            #
-            # `continue` instead, and stop at a STRUCTURAL boundary: a second trailer magic line.
-            # Prose after the trailer is skipped rather than trusted, which is what the original
-            # comment was reaching for.
-            if TRAILER_MAGIC in line:
-                break
-            continue
-
-    if out["status"] not in TRAILER_STATUSES:
-        out["errors"].append(
-            f"STATUS must be one of {'/'.join(TRAILER_STATUSES)}, got {out['status']!r}")
-    if out["status"] == "BLOCKED" and not out["blocked_reason"]:
-        out["errors"].append("STATUS: BLOCKED with no BLOCKED-REASON — an unexplained block is "
-                             "indistinguishable from a crash")
-    if out["status"] == "COMPLETE":
-        if not out["artifact"]:
-            out["errors"].append("STATUS: COMPLETE with no ARTIFACT — the whole point of the "
-                                 "trailer is naming the deliverable")
-        if out["findings"] is None:
-            out["errors"].append("STATUS: COMPLETE with no FINDINGS count — nothing to cross-check "
-                                 "the artifact against")
-    return out
-
-
-def verify_trailer(text, artifact_findings=None, expected_artifact=None, artifact_root=None):
-    """Cross-check a declared trailer against the artifact that was actually written.
-
-    `artifact_findings` is the findings list parsed from the artifact on disk, or None when the
-    caller could not read it. `expected_artifact` is the path the PHASE owes, so a write that landed
-    somewhere else is caught. `artifact_root` is the directory `expected_artifact` is relative to;
-    supply it whenever it is known, because without it the path check degrades to basename equality.
-
-    Returns (ok: bool, problems: list[str]).
-    """
-    problems = []
-    t = parse_trailer(text)
-    if t is None:
-        return False, [
-            ("no REVIEW-TRAILER found in the agent's output. It did not declare an outcome, so "
-             "there is nothing to believe: a run that ends without a trailer is truncated, hung, "
-             "or ignored its contract. Absent is not APPROVE.")]
-    problems.extend(t["errors"])
-
-    if t["status"] == "BLOCKED":
-        # A block is a FAILED phase with a named cause, never a pass. Reported as a problem on
-        # purpose so the caller cannot accidentally treat it as a completed review.
-        problems.append(f"agent reported STATUS: BLOCKED — {t['blocked_reason']}")
-        return False, problems
-
-    # The trailer must agree with ITSELF, checked before anything on disk is consulted. This is
-    # deliberately outside the artifact block below: a trailer whose SEVERITIES sum to 5 over
-    # `FINDINGS: 7` is already wrong, and gating that on whether the artifact happened to be
-    # readable would mean the most basic inconsistency went unreported precisely when the caller had
-    # least other information.
-    if t["status"] == "COMPLETE" and t["severities"] and t["findings"] is not None:
-        declared_sum = sum(t["severities"].values())
-        if declared_sum != t["findings"]:
-            problems.append(
-                f"trailer's SEVERITIES sum to {declared_sum} but FINDINGS says {t['findings']} — "
-                f"the trailer disagrees with itself")
-
-    if expected_artifact and t["artifact"]:
-        # Compared as RESOLVED ABSOLUTE paths against `artifact_root`, not by suffix.
-        #
-        # The suffix form was `got.endswith(want) or want.endswith(got)`, and it let through exactly
-        # the shape it was written to catch: with want='.code-review/VALIDATED.json', the value
-        # '/tmp/somewhere-else/.code-review/VALIDATED.json' satisfies got.endswith(want). The second
-        # arm was looser still — 'ARTIFACT: json' satisfies want.endswith(got) — so a one-word
-        # trailer passed a check whose entire purpose is detecting a misdirected write.
-        #
-        # `artifact_root` is where the caller expects the artifact to live. When it is not supplied
-        # the comparison degrades to basename equality, which is weak but honest: without a root
-        # there is no absolute answer, and claiming one would be the original bug in a new form.
-        # `lstrip("./")` would be wrong here and was: it strips every leading character in the SET
-        # {'.', '/'}, so ".code-review/VALIDATED.json" becomes "code-review/VALIDATED.json" and the
-        # comparison is against a directory that does not exist. Strip the exact "./" prefix only.
-        want_rel = expected_artifact.removeprefix("./")
-        got_raw = t["artifact"]
-        if artifact_root:
-            want_abs = os.path.realpath(os.path.join(artifact_root, want_rel))
-            got_abs = os.path.realpath(
-                got_raw if os.path.isabs(got_raw) else os.path.join(artifact_root, got_raw))
-            mismatch = want_abs != got_abs
-            detail = f"resolved to {got_abs!r}, expected {want_abs!r}"
-        else:
-            mismatch = os.path.basename(got_raw) != os.path.basename(want_rel)
-            detail = (f"no artifact_root supplied, so only the basename could be compared "
-                      f"({os.path.basename(got_raw)!r} vs {os.path.basename(want_rel)!r})")
-        if mismatch:
-            problems.append(
-                f"trailer names artifact {got_raw!r} but this phase owes {expected_artifact!r} "
-                f"({detail}). A different path usually means the agent wrote to the wrong working "
-                f"directory, which an existence check on the RIGHT path reports as a missing "
-                f"artifact rather than as a misdirected one.")
-
-    if artifact_findings is not None and t["findings"] is not None:
-        actual = len(artifact_findings)
-        if actual != t["findings"]:
-            problems.append(
-                f"trailer declares {t['findings']} finding(s) but the artifact holds {actual}. "
-                f"The agent's report disagrees with its own deliverable — this is the write-path "
-                f"defect, and the report is the half that is wrong.")
-
-        if t["severities"]:
-            actual_sev = {}
-            for f in artifact_findings:
-                canon = canon_severity(f.get("severity"))
-                if canon:
-                    actual_sev[canon] = actual_sev.get(canon, 0) + 1
-
-            # Iterate the UNION, not just what the trailer declared.
-            #
-            # This loop used to run over `t["severities"]` alone, which made an OMISSION invisible:
-            # an agent could declare `FINDINGS: 7` matching the artifact's true total — the one check
-            # that was enforced — while writing `SEVERITIES: MAJOR=2 MINOR=3` and simply leaving out
-            # a `NIT=2` category the artifact holds. Every declared key matched, so nothing fired,
-            # and the breakdown a caller reads off the trailer was silently wrong.
-            for sev in sorted(set(t["severities"]) | set(actual_sev)):
-                declared = t["severities"].get(sev, 0)
-                actual = actual_sev.get(sev, 0)
-                if declared == actual:
-                    continue
-                if sev not in t["severities"]:
-                    problems.append(
-                        f"trailer OMITS {sev} entirely, but the artifact holds {actual} — an "
-                        f"omitted category is not the same as zero")
-                else:
-                    problems.append(
-                        f"trailer declares {declared} {sev} finding(s), artifact holds {actual}")
-
-
-    return not problems, problems
 
 
 # --- the DOCUMENT envelope (R1) -----------------------------------------------------------------
@@ -781,13 +534,14 @@ def verify_trailer(text, artifact_findings=None, expected_artifact=None, artifac
 # prose and a TypeScript `interface` block — handed to a model, enforced by nobody. That is the exact
 # arrangement that produced the contentless-findings defect the top of this file describes: a schema
 # in prose loses to a worked example every time. The schema below is generated FROM the constants in
-# this module, so it cannot become a second opinion about the same contract; `scripts/check-contract-
-# schema.sh` asserts the committed copy still matches what this function produces.
+# this module, so it cannot become a second opinion about the same contract; `contract.test.sh`
+# asserts the committed copy still matches what this function produces, and
+# `python3 contract.py schema --write` regenerates it.
 #
 # THE DIVISION OF LABOUR IS DELIBERATE, and it is what keeps this from being a duplicate predicate:
 #
-#   contract_defects()      owns a FINDING's keys. Still the only per-finding predicate, still the
-#                           one `check-predicate-parity.py` polices. Not reimplemented here.
+#   contract_defects()      owns a FINDING's keys. Still the only per-finding predicate. Not
+#                           reimplemented here.
 #   contract_schema()       owns the ENVELOPE — agent, category, branches, verdict, metrics, and the
 #                           fact that `findings` is an array of objects. New ground.
 #
@@ -806,8 +560,7 @@ CONFIDENCES = ("HIGH", "MEDIUM", "LOW")
 
 #: `metrics` keys, and which may be null. The severity buckets are the lowercased severity names, so
 #: they follow SEVERITY_RANK rather than being spelled a second time: renaming a tier renames its
-#: bucket, which is what happened when `info` became `nit` in code-review 3.0.0 and the contract had to
-#: be edited in three places.
+#: bucket, so a renamed tier cannot leave a stale bucket behind.
 METRICS_COUNT_KEYS = ("total",) + tuple(s.lower() for s in SEVERITY_RANK) + ("ux_impact_count",)
 METRICS_NULLABLE_KEYS = ("coverage_pct",)
 
@@ -815,52 +568,38 @@ METRICS_NULLABLE_KEYS = ("coverage_pct",)
 DOCUMENT_REQUIRED = ("agent", "category", "findings")
 
 #: Envelope keys only the validator's VALIDATED.json carries. Optional everywhere, and listed so the
-#: schema can permit them without opening the document to arbitrary extra keys.
-VALIDATED_ONLY_KEYS = ("rejected_count", "blocking_reason_ids")
+#: schema can permit them without opening the document to arbitrary extra keys. Their shapes are in
+#: `_VALIDATED_ONLY_SCHEMA` below.
+VALIDATED_ONLY_KEYS = ("rejected_count", "blocking_reason_ids", "blocking_floor",
+                       "incomplete_inputs", "contract_health")
 
-#: Envelope keys the ROLLUP artifact must carry, where a specialist's own contract need not.
-#:
-#: This distinction is the reason `document_defects` takes a flag instead of validating one shape for
-#: everything. The submission gate reads `verdict` and `metrics` out of the rollup to decide whether
-#: the review was clean; a rollup missing `verdict` yields `None` from `.get()`, and `None` is not
-#: `"REQUEST_CHANGES"`, so it is indistinguishable from APPROVE at the one place that decides whether
-#: a change may merge. A SPECIALIST missing `verdict` is harmless by contrast — the contract says so
-#: as many words ("nothing reads a specialist's `verdict` or `metrics`"), and requiring it there would
-#: fail four honest agents to protect a field nobody reads.
-ROLLUP_REQUIRED = ("verdict", "metrics")
-
-#: Artifacts a phase owes that are NOT agent contracts, and so must not be validated as one.
-#:
-#: DECLARED rather than inferred, and the default is deliberately the other way round: an artifact not
-#: named here IS validated. So adding a new contract artifact needs no edit and cannot slip through
-#: unvalidated, while excusing one requires writing down why. That is the fail-closed direction.
-#:
-#: `CONTEXT.json` is the case, and it is the whole reason this set exists. It is the pre-built bounded
-#: context written by `prepare-context.sh` — an INPUT to the review, not an agent's report — so it has
-#: no `agent`, no `category` and no `findings`, and validating it against the contract produced three
-#: defects on a perfectly correct file. Found by the bench suite reporting spurious warnings on a good
-#: run, which is exactly what that assertion is for.
-#:
-#: Note what is NOT here: `SCAN.json`. It is written by `review-scan.sh` rather than by an agent, but
-#: it genuinely IS a contract document — it carries `agent`, `category` and `findings`, and
-#: `review-scan.sh` already runs `contract_defects` over its findings. Being machine-generated is not
-#: the criterion; carrying findings someone downstream will act on is.
-NON_CONTRACT_ARTIFACTS = frozenset({"CONTEXT.json"})
-
-
-def is_contract_artifact(path) -> bool:
-    """True when `path` names an artifact that must satisfy the agent-contract schema."""
-    if not path:
-        return False
-    base = os.path.basename(str(path))
-    return base.endswith(".json") and base not in NON_CONTRACT_ARTIFACTS
-
-
-#: The rollup artifact's filename. Spelled here ONCE so a caller can ask "am I holding the rollup?"
-#: without every caller carrying its own literal — which is how `code-review` ended up hardcoded in ten
-#: places. The phase→artifact map in run-review-phase.sh remains the authority on which phase OWES
-#: it; this constant only answers what it is called.
-ROLLUP_ARTIFACT_BASENAME = "VALIDATED.json"
+# `contract_health` is the TOOLING-OWNER channel: findings that were repaired onto the contract, and
+# findings dropped because nothing actionable was left. It is omitted when both counts are zero.
+# `incomplete_inputs` names each required input finalize could not read; it is non-empty exactly when
+# the verdict was forced to INCOMPLETE by a missing artifact rather than by an uncertain finding.
+_VALIDATED_ONLY_SCHEMA = {
+    "rejected_count": {"type": "integer", "minimum": 0},
+    "blocking_reason_ids": {"type": "array", "items": {"type": "string"}},
+    "blocking_floor": {"enum": list(SEVERITY_RANK)},
+    "incomplete_inputs": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["input", "problem"],
+            "properties": {"input": {"type": "string"}, "problem": {"type": "string"}},
+        },
+    },
+    "contract_health": {
+        "type": "object",
+        "required": ["repaired", "rejected", "repairs", "defects"],
+        "properties": {
+            "repaired": {"type": "integer", "minimum": 0},
+            "rejected": {"type": "integer", "minimum": 0},
+            "repairs": {"type": "array"},
+            "defects": {"type": "array"},
+        },
+    },
+}
 
 
 def contract_schema():
@@ -877,7 +616,7 @@ def contract_schema():
         "description": (
             "The .code-review/{CATEGORY}.json contract a gate agent writes. GENERATED from "
             "contract.py's constants by contract_schema(); do not hand-edit. Regenerate with "
-            "scripts/check-contract-schema.sh --write."
+            "python3 pipeline/contract.py schema --write."
         ),
         "type": "object",
         "required": list(DOCUMENT_REQUIRED),
@@ -921,9 +660,7 @@ def contract_schema():
                 },
             },
             "scan_triage": {"type": "array"},
-            **{k: ({"type": "integer", "minimum": 0} if k == "rejected_count"
-                   else {"type": "array", "items": {"type": "string"}})
-               for k in VALIDATED_ONLY_KEYS},
+            **{k: _VALIDATED_ONLY_SCHEMA[k] for k in VALIDATED_ONLY_KEYS},
         },
         # TRUE, deliberately. An agent adding a field is not a defect worth failing a review over,
         # and `additionalProperties: false` would make every future field a breaking change to a
@@ -933,56 +670,706 @@ def contract_schema():
     }
 
 
-def is_rollup_artifact(path) -> bool:
-    """True when `path` names the rollup artifact, however it is spelled or prefixed.
+# --- the validator's decisions ------------------------------------------------------------------
+#
+# The validator agent reads code and makes judgement calls: is this finding real, is it where it says,
+# did the diff cause it, is it the same as that other one. Everything after those calls is arithmetic
+# — severity mapping, dedup of identical findings, the blocking predicate, counts, ids, the verdict —
+# and arithmetic done by a model from a prose restatement is how the prompt and this module drifted
+# apart. So the agent writes only its judgements, in VALIDATOR-DECISIONS.json, and `finalize` below
+# does the arithmetic.
 
-    Compares the BASENAME, so `.code-review/VALIDATED.json`, a bare `VALIDATED.json` and an absolute
-    path all answer the same. Case-insensitive because the caller's value comes from a trailer line an
-    agent typed.
+DECISIONS_FILE = "VALIDATOR-DECISIONS.json"
+
+#: Where a decided finding came from: one agent contract artifact each, all read by finalize itself.
+#: SCAN and SEMANTIC are always required; the other three only when CONTEXT.json spawned them.
+DECISION_SOURCES = ("SCAN", "SEMANTIC", "TESTING", "ARCHITECTURE", "CLAUDE_CONFIG")
+_SOURCE_FILES = {
+    "SCAN": "SCAN.json",
+    "SEMANTIC": "SEMANTIC.json",
+    "TESTING": "TESTING.json",
+    "ARCHITECTURE": "ARCHITECTURE.json",
+    "CLAUDE_CONFIG": "CLAUDE_CONFIG.json",
+}
+#: The CONTEXT.json gate that decides whether a conditional source was spawned.
+_SOURCE_GATES = {"TESTING": "testing", "ARCHITECTURE": "architect", "CLAUDE_CONFIG": "claude_config"}
+
+#: What the validator decided. `keep` may also correct fields; `merge` folds a duplicate into another
+#: finding; `reject` removes a finding and must carry one of REJECT_REASONS.
+DECISION_ACTIONS = ("keep", "reject", "merge")
+
+#: The closed set of reasons a finding may be removed. "Out of diff" is deliberately NOT here: an
+#: out-of-diff finding is kept with `in_diff: false` and its severity unchanged. Being unsure is not
+#: here either; uncertainty is `confidence`, and it escalates rather than deletes.
+REJECT_REASONS = ("INVALID_LOCATION", "ALREADY_ADDRESSED", "FALSE_POSITIVE", "TRIAGE_DROP")
+
+#: Finding keys a decision may set or correct. `id` is not one: finalize numbers the output itself.
+DECISION_FINDING_KEYS = tuple(k for k in CONTRACT_REQUIRED if k != "id")
+
+#: The intrinsic-severity vocabulary `review-architect` writes, mapped 1:1 onto the contract tiers.
+#: Impact only: scope is `in_diff` and certainty is `confidence`, so neither appears here.
+INTRINSIC_SEVERITY = {"CRITICAL": BLOCKER, "HIGH": MAJOR, "MEDIUM": MINOR, "LOW": NIT}
+
+
+def decisions_schema():
+    """JSON Schema for VALIDATOR-DECISIONS.json, generated from the constants above.
+
+    Committed as `schemas/validator-decisions.schema.json`; contract.test.sh fails if the two differ.
+    finalize does not need a schema library: `_decision_error` enforces the same rules, one decision
+    at a time, so a single bad entry is reported instead of discarding the whole file.
     """
-    if not path:
-        return False
-    return os.path.basename(str(path)).lower() == ROLLUP_ARTIFACT_BASENAME.lower()
+    finding_props = contract_schema()["properties"]["findings"]["items"]["properties"]
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://github.com/CatylAI/claude-marketplace/schemas/validator-decisions.schema.json",
+        "title": "Validator decisions",
+        "description": (
+            "The .code-review/VALIDATOR-DECISIONS.json file review-validator writes. GENERATED from "
+            "contract.py by decisions_schema(); do not hand-edit. Regenerate with "
+            "python3 pipeline/contract.py schema --write."
+        ),
+        "type": "object",
+        "required": ["agent", "decisions"],
+        "properties": {
+            "agent": {"const": "review-validator"},
+            "decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["source", "source_id", "action"],
+                    "properties": {
+                        "source": {"enum": list(DECISION_SOURCES)},
+                        "source_id": {"type": "string", "minLength": 1},
+                        "action": {"enum": list(DECISION_ACTIONS)},
+                        "reason": {"enum": list(REJECT_REASONS)},
+                        "merged_into": {"type": "string", "minLength": 1},
+                        "detail": {"type": "string"},
+                        "finding": {
+                            "type": "object",
+                            "properties": {k: finding_props[k] for k in DECISION_FINDING_KEYS},
+                            "additionalProperties": True,
+                        },
+                    },
+                    "allOf": [
+                        {"if": {"properties": {"action": {"const": "reject"}}},
+                         "then": {"required": ["reason"]}},
+                        {"if": {"properties": {"action": {"const": "merge"}}},
+                         "then": {"required": ["merged_into"]}},
+                    ],
+                    "additionalProperties": True,
+                },
+            },
+            "notes": {"type": "array", "items": {"type": "string"}},
+            "positive_observations": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": True,
+    }
 
 
-def document_defects(doc, require_rollup=False):
-    """Return a list of human-readable envelope defects in `doc`, or [] when it conforms.
+def _decision_error(d, addr, resolve_target):
+    """Check decision `d`. Returns (error, key, target_key); `error` is None when it can be applied.
 
-    Validated with `jsonschema` against `contract_schema()`. A missing library is a HARD FAILURE,
-    raised rather than returned, for the same reason `catalog.parse_frontmatter` refuses to fall back
-    to grepping: a validator that degrades to a weaker check on an import error reports a clean
-    document it never actually validated, and the degradation is invisible at the call site.
-
-    `require_rollup` additionally demands ROLLUP_REQUIRED. It is a parameter and not a property of the
-    schema because the requirement is per-ARTIFACT, not per-document-shape, and JSON Schema can only
-    express that by branching on a category literal the generator would then have to hardcode. The
-    caller knows which artifact it is holding; `is_rollup_artifact` turns a path into this flag.
-
-    Per-FINDING defects are reported here only at the shape level the schema covers. Callers that
-    need the authoritative per-finding verdict must still use `contract_defects` — this function does
-    not replace it and does not restate it.
+    `addr` maps (source, source_id) to the finding's key. `resolve_target` turns a `merged_into`
+    value into a key, or returns (None, error). A rejected decision is not fatal. The finding it
+    named is treated as undecided, which keeps it (see `finalize`), so a malformed entry can never
+    delete a finding.
     """
+    if not isinstance(d, dict):
+        return "not an object", None, None
+    source, sid, action = d.get("source"), d.get("source_id"), d.get("action")
+    if source not in DECISION_SOURCES:
+        return f"source {source!r} is not one of {list(DECISION_SOURCES)}", None, None
+    if not isinstance(sid, str) or not sid.strip():
+        return "source_id is missing or blank", None, None
+    if action not in DECISION_ACTIONS:
+        return f"action {action!r} is not one of {list(DECISION_ACTIONS)}", None, None
+    if "finding" in d and not isinstance(d["finding"], dict):
+        return "finding is not an object", None, None
+    key = addr.get((source, sid))
+    if key is None:
+        return f"source_id {sid!r} does not match any finding in {_SOURCE_FILES[source]}", None, None
+    if action == "reject" and d.get("reason") not in REJECT_REASONS:
+        return f"reject reason {d.get('reason')!r} is not one of {list(REJECT_REASONS)}", key, None
+    target = None
+    if action == "merge":
+        target, err = resolve_target(d.get("merged_into"))
+        if err is not None:
+            return err, key, None
+        if target == key:
+            return "merged_into names the finding itself", key, None
+    return None, key, target
+
+
+# --- finalize -----------------------------------------------------------------------------------
+
+def _read_json(path):
+    """(document, problem). Exactly one is None."""
+    if not os.path.isfile(path):
+        return None, "missing"
     try:
-        import jsonschema                                   # noqa: PLC0415
-    except ImportError as exc:                              # pragma: no cover
-        raise RuntimeError(
-            "jsonschema is required to validate an agent contract document (pip install "
-            "jsonschema). This is raised rather than skipped: a boundary that silently stops "
-            "validating is how an unvalidated artifact reads as a clean one."
-        ) from exc
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh), None
+    except (OSError, ValueError) as exc:
+        return None, f"not parseable JSON ({exc.__class__.__name__}: {exc})"
 
-    validator = jsonschema.Draft202012Validator(contract_schema())
-    out = []
-    for err in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path)):
-        where = "/".join(str(p) for p in err.absolute_path) or "(document root)"
-        out.append(f"{where}: {err.message}")
 
-    if require_rollup and isinstance(doc, dict):
-        for key in ROLLUP_REQUIRED:
-            if key not in doc:
-                out.append(
-                    f"(document root): the rollup artifact is missing {key!r}. The submission gate "
-                    f"reads it to decide whether the review was clean, and an absent key yields None "
-                    f"— which is not 'REQUEST_CHANGES', so it reads as APPROVE at the one place that "
-                    f"gates a merge.")
-    return out
+def _load_artifact(out_dir, name, problems):
+    """Load an agent contract artifact. Records a problem and returns None when it is unusable."""
+    doc, problem = _read_json(os.path.join(out_dir, name))
+    if problem is None and not (isinstance(doc, dict) and isinstance(doc.get("findings"), list)):
+        problem = "has no findings array"
+    if problem is not None:
+        problems.append({"input": name, "problem": problem})
+        return None
+    return doc
+
+
+def _canon_confidence(v):
+    """(value, repair or None). Absent means HIGH, matching the predicate; unknown means LOW."""
+    if _blank(v):
+        return "HIGH", "confidence <- HIGH (absent)"
+    s = str(v).strip().upper()
+    if s in CONFIDENCES:
+        return s, (None if s == v else f"confidence <- {s} (from {v!r})")
+    return "LOW", f"confidence <- LOW (unrecognised {v!r})"
+
+
+def _shape_finding(f, source):
+    """Normalise one kept finding onto the full contract. Returns (finding, repairs, defects).
+
+    Repairs are what finalize changed; defects are what it could not fix. A finding with defects is
+    dropped from `findings` and reported in `contract_health` with its raw object.
+    """
+    raw = f
+    f, repairs = normalize_finding(f)
+    if not isinstance(f, dict):
+        return raw, repairs, ["not-an-object"]
+    repairs = list(repairs)
+
+    sev_raw = f.get("severity")
+    sev_key = str(sev_raw or "").strip().upper()
+    if sev_key in INTRINSIC_SEVERITY:
+        f["severity"] = INTRINSIC_SEVERITY[sev_key]
+        repairs.append(f"severity <- {f['severity']} (intrinsic {sev_raw!r})")
+    else:
+        canon = canon_severity(sev_raw)
+        if canon and canon != sev_raw:
+            f["severity"] = canon
+            repairs.append(f"severity <- {canon} (from {sev_raw!r})")
+
+    conf, note = _canon_confidence(f.get("confidence"))
+    f["confidence"] = conf
+    if note:
+        repairs.append(note)
+
+    # Scope defaults to in-diff, the same default the predicate applies, and it is recorded because
+    # it can decide whether the finding blocks.
+    if "in_diff" not in f or f["in_diff"] is None:
+        f["in_diff"] = True
+        repairs.append("in_diff <- true (absent)")
+    if "ux_impact" not in f or f["ux_impact"] is None:
+        f["ux_impact"] = False
+    for k in ("evidence", "recommendation"):
+        f[k] = "" if f.get(k) is None else str(f[k])
+    if _blank(f.get("category")):
+        f["category"] = source
+
+    defects = contract_defects(f)
+    if not canon_severity(f.get("severity")) and not any(d.endswith(":severity") for d in defects):
+        defects.append("unrankable:severity")
+    for k in sorted(_BOOLS):
+        if not isinstance(f.get(k), bool):
+            defects.append(f"not-a-boolean:{k}")
+    return f, repairs, defects
+
+
+def _apply_corrections(f, corr, source):
+    """Apply a `keep` decision's field corrections to finding `f`. Returns (finding, refused).
+
+    Each corrected key is tried on its own, and one that would give the finding a contract defect it
+    did not already have is refused and reported instead of applied. Without this, a keep whose
+    correction was malformed (`"severity": "MAJ"`, a blank title, a list of locations) sent a real,
+    confirmed finding to `contract_health` as unusable, so a keep deleted it. `refused` is a list of
+    (key, defects) pairs.
+    """
+    before = set(_shape_finding(f, source)[2])
+    out, refused = dict(f), []
+    for k in DECISION_FINDING_KEYS:
+        if k not in corr:
+            continue
+        trial = dict(out)
+        trial[k] = corr[k]
+        added = [x for x in _shape_finding(trial, source)[2] if x not in before]
+        if added:
+            refused.append((k, ", ".join(added)))
+        else:
+            out = trial
+    return out, refused
+
+
+def _str_list(v):
+    """The string items of `v` when it is a list. A lone string is one item, never its characters."""
+    if isinstance(v, str):
+        return [v] if v.strip() else []
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
+#: Certainty order for folding duplicates: the lower number is the stronger claim.
+_CONFIDENCE_RANK = {c: i for i, c in enumerate(CONFIDENCES)}
+
+
+def _atomic_write(path, text):
+    """Write via a temp file in the same directory, then rename, so a reader never sees half a file."""
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def finalize(out_dir, floor=None):
+    """Build VALIDATED.json/.md (and CONTRACT-DEFECTS.md when needed) in `out_dir`.
+
+    Returns the exit code: 0 when every required input was usable, 2 when one was missing or
+    unparseable. VALIDATED.json is written in both cases; on 2 its verdict is INCOMPLETE and
+    `incomplete_inputs` names what was missing.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    incomplete = []
+
+    # ---- inputs. CONTEXT.json is not a contract document, so it is loaded without the findings check.
+    ctx, problem = _read_json(os.path.join(out_dir, "CONTEXT.json"))
+    if problem is None and not isinstance(ctx, dict):
+        problem = "is not a JSON object"
+    if problem is not None:
+        incomplete.append({"input": "CONTEXT.json", "problem": problem})
+        ctx = {}
+
+    # Gated agents are required only when prepare-context.sh spawned them. Each writes its file even
+    # when it finds nothing, so a spawned agent with no file died; that is not a clean pass.
+    docs = {}
+    for source, name in _SOURCE_FILES.items():
+        gate = _SOURCE_GATES.get(source)
+        if gate is None or (ctx.get(gate) or {}).get("spawn") is True:
+            docs[source] = _load_artifact(out_dir, name, incomplete)
+
+    ddoc, problem = _read_json(os.path.join(out_dir, DECISIONS_FILE))
+    if problem is None and not (isinstance(ddoc, dict) and isinstance(ddoc.get("decisions"), list)):
+        problem = "has no decisions array"
+    if problem is not None:
+        incomplete.append({"input": DECISIONS_FILE, "problem": problem})
+        ddoc = {"decisions": []}
+
+    # ---- every input finding. `key` is its handle in `source_ids` and the audit log: the producer's
+    # id when no other source uses that id, `SOURCE:id` when two sources do, and `SOURCE#index` when
+    # it has no id or repeats one inside its own file. Decisions name a finding by (source,
+    # source_id), and `addr` maps that pair onto the key. Keying on the id alone meant that when
+    # SEMANTIC and TESTING both emitted `X-1`, TESTING's finding became `TESTING#0`, which no
+    # decision could name, so it was always capped to MEDIUM and escalated.
+    raw_inputs, id_sources = [], {}
+    for source in DECISION_SOURCES:
+        doc = docs.get(source)
+        if not doc:
+            continue
+        for i, f in enumerate(doc["findings"]):
+            fid = f.get("id") if isinstance(f, dict) else None
+            fid = fid if isinstance(fid, str) and fid.strip() else None
+            raw_inputs.append((source, i, fid, f))
+            if fid:
+                id_sources.setdefault(fid, set()).add(source)
+    inputs = []          # [(key, source, finding)] in a stable order
+    known, addr = {}, {}
+    for source, i, fid, f in raw_inputs:
+        if fid is None or (source, fid) in addr:
+            key = f"{source}#{i}"
+        else:
+            key = fid if len(id_sources[fid]) == 1 else f"{source}:{fid}"
+            addr[(source, fid)] = key
+        known[key] = source
+        inputs.append((key, source, f))
+
+    def resolve_target(target):
+        """`merged_into` -> (key, None), or (None, error). A bare id must name exactly one finding."""
+        if not isinstance(target, str) or not target.strip():
+            return None, f"merged_into {target!r} does not match any finding"
+        hits = [k for (_, sid), k in addr.items() if sid == target]
+        if len(hits) == 1:
+            return hits[0], None
+        if len(hits) > 1:
+            return None, (f"merged_into {target!r} is ambiguous: "
+                          + ", ".join(sorted(known[k] for k in hits))
+                          + " all have it; name it as SOURCE:id")
+        if target in known:
+            return target, None
+        return None, f"merged_into {target!r} does not match any finding"
+
+    # ---- decisions. The first valid decision per finding wins; later ones are reported.
+    decisions, decision_errors = {}, []   # key -> (decision, merge-target key)
+    for i, d in enumerate(ddoc.get("decisions") or []):
+        err, key, target = _decision_error(d, addr, resolve_target)
+        if err is None and key in decisions:
+            err = "a second decision for the same source_id"
+        if err is not None:
+            decision_errors.append({"index": i, "source_id": (d.get("source_id") if isinstance(d, dict)
+                                                             else None), "error": err})
+            continue
+        decisions[key] = (d, target)
+
+    # A merge into a finding that is itself rejected or merged would make the duplicate vanish with
+    # its target. That is a deletion nobody decided, so such a merge is refused and the finding kept.
+    for key, (d, target) in list(decisions.items()):
+        if d["action"] == "merge" and decisions.get(target, ({}, None))[0].get("action") in (
+                "reject", "merge"):
+            decision_errors.append({"index": None, "source_id": key,
+                                    "error": "merged_into names a finding that is itself rejected "
+                                             "or merged"})
+            del decisions[key]
+
+    # ---- apply.
+    kept, merges, audit = {}, [], []
+    rejected_count = 0
+    for key, source, f in inputs:
+        d, target = decisions.get(key, (None, None))
+        if d is None:
+            base = dict(f) if isinstance(f, dict) else f
+            if source != "SCAN" and isinstance(base, dict):
+                # A model judgement nobody re-read is a proposal, not a result. It is kept (never
+                # deleted for lack of a decision) and its certainty is capped, so it escalates.
+                if str(base.get("confidence") or "HIGH").strip().upper() == "HIGH":
+                    base["confidence"] = "MEDIUM"
+                audit.append({"source_id": key, "source": source, "action": "unreviewed",
+                              "reason": None, "detail": "no validator decision; kept, confidence "
+                                                        "capped at MEDIUM"})
+            kept[key] = (source, base)
+            continue
+        audit.append({"source_id": key, "source": source, "action": d["action"],
+                      "reason": d.get("reason"), "detail": str(d.get("detail") or "")})
+        if d["action"] == "reject":
+            rejected_count += 1
+            continue
+        if d["action"] == "merge":
+            merges.append((key, target, f))
+            continue
+        base = dict(f) if isinstance(f, dict) else f
+        if isinstance(base, dict) and d.get("finding"):
+            base, refused = _apply_corrections(base, d["finding"], source)
+            for k, why in refused:
+                decision_errors.append({"index": None, "source_id": key,
+                                        "error": f"correction {k}={d['finding'][k]!r} ignored: it "
+                                                 f"would make the finding unusable ({why})"})
+        kept[key] = (source, base)
+
+    # ---- shape every kept finding onto the contract.
+    findings, repairs_log, defects_log = {}, [], []
+    for key, (source, f) in kept.items():
+        shaped, repairs, defects = _shape_finding(f, source)
+        if defects:
+            defects_log.append({"source_id": key, "defects": defects, "raw": f})
+            continue
+        if repairs:
+            repairs_log.append({"source_id": key, "repairs": repairs})
+        shaped["source_ids"] = [key]
+        shaped["related_locations"] = []
+        findings[key] = shaped
+
+    def fold(target, dup_key, dup):
+        """Fold a SHAPED duplicate into `target`, keeping the stronger claim on every axis.
+
+        Higher severity, and every location, as before. Also in-diff over out-of-diff, the higher
+        confidence and ux_impact: two findings folded into one are one claim, and the survivor must
+        not be weaker than either input. Folding only severity let an out-of-diff copy absorb an
+        in-diff HIGH one and turned REQUEST_CHANGES into APPROVE.
+        """
+        target["source_ids"].append(dup_key)
+        if not isinstance(dup, dict):
+            return
+        loc = dup.get("location")
+        if isinstance(loc, str) and loc.strip() and loc != target["location"] \
+                and loc not in target["related_locations"]:
+            target["related_locations"].append(loc)
+        dsev = canon_severity(dup.get("severity"))
+        if dsev and SEVERITY_RANK[dsev] < SEVERITY_RANK[target["severity"]]:
+            target["severity"] = dsev
+        for k in ("in_diff", "ux_impact"):
+            if dup.get(k) is True:
+                target[k] = True
+        dconf = dup.get("confidence")
+        if dconf in _CONFIDENCE_RANK and \
+                _CONFIDENCE_RANK[dconf] < _CONFIDENCE_RANK[target["confidence"]]:
+            target["confidence"] = dconf
+
+    merged_count = 0
+    for dup_key, target_key, dup in merges:
+        if target_key in findings:
+            # Shaped first, so the architect's intrinsic scale (CRITICAL/HIGH/...) and every other
+            # repair apply to the duplicate too. The raw object's `CRITICAL` read as no severity at
+            # all, so a BLOCKER merged into a MINOR finding stayed MINOR.
+            fold(findings[target_key], dup_key, _shape_finding(dup, known[dup_key])[0])
+            merged_count += 1
+        else:
+            # The target was dropped as contentless. Keep the duplicate rather than lose both.
+            shaped, repairs, defects = _shape_finding(dup, known[dup_key])
+            if defects:
+                defects_log.append({"source_id": dup_key, "defects": defects, "raw": dup})
+            else:
+                shaped["source_ids"], shaped["related_locations"] = [dup_key], []
+                findings[dup_key] = shaped
+
+    # Identical claims from two producers (same location, same title) are one finding.
+    seen = {}
+    for key in list(findings):
+        f = findings[key]
+        sig = (f["location"].strip(), str(f["title"]).strip().lower())
+        if sig in seen:
+            fold(findings[seen[sig]], key, f)
+            findings[seen[sig]]["source_ids"].extend(f["source_ids"][1:])
+            del findings[key]
+            merged_count += 1
+        else:
+            seen[sig] = key
+
+    # ---- number, count, decide.
+    ordered = sorted(findings.values(),
+                     key=lambda f: (sort_rank(f["severity"]), f["location"], f["source_ids"][0]))
+    per_sev = {s: 0 for s in SEVERITY_RANK}
+    for f in ordered:
+        per_sev[f["severity"]] += 1
+        f["id"] = f"VALIDATED-{f['severity']}-{per_sev[f['severity']]}"
+        if not f["related_locations"]:
+            del f["related_locations"]
+
+    floor_rank, floor_note = floor_diagnostics(floor)
+    floor_name = next(s for s, r in SEVERITY_RANK.items() if r == floor_rank)
+    blocking = [f["id"] for f in ordered if finding_blocks(f, floor_rank)]
+    escalated = [f["id"] for f in ordered if finding_escalates(f, floor_rank)]
+    if incomplete:
+        verdict, reason_ids = "INCOMPLETE", blocking + escalated
+    else:
+        verdict = rollup_verdict(ordered, floor_rank)
+        reason_ids = blocking if verdict == "REQUEST_CHANGES" else \
+            escalated if verdict == "INCOMPLETE" else []
+
+    scan = docs.get("SCAN") or {}
+    cov = (scan.get("metrics") or {}).get("coverage_pct")
+    coverage_pct = cov if isinstance(cov, (int, float)) and not isinstance(cov, bool) else None
+
+    notes = []
+    if floor_note:
+        notes.append(floor_note)
+    if (ctx.get("worktree") or {}).get("matches_reviewed_ref") is False:
+        notes.append("The working tree is not the reviewed commit; locations were checked against "
+                     "DIFF.md.")
+    diff = ctx.get("diff") or {}
+    if diff.get("lines_byte_truncated"):
+        notes.append("Some diff lines were byte-truncated in DIFF.md; those regions were not fully "
+                     "read.")
+    if diff.get("files_omitted"):
+        notes.append(f"{len(diff['files_omitted'])} changed file(s) were omitted from DIFF.md by the "
+                     "line budget and were not reviewed.")
+    skipped = [s.get("tool") for s in ((scan.get("scan_meta") or {}).get("tools_skipped") or [])
+               if isinstance(s, dict)]
+    if skipped:
+        notes.append("Scanner tools skipped: " + ", ".join(str(t) for t in skipped) + ".")
+    # Each judge records what it could not check; a gap one agent admitted must reach the reader.
+    for source, doc in docs.items():
+        cov_block = (doc or {}).get("coverage")
+        gaps = cov_block.get("gaps_not_covered") if isinstance(cov_block, dict) else None
+        for g in gaps if isinstance(gaps, list) else []:
+            notes.append(f"{source}: not covered: {g}")
+    # A list is required: a bare string would otherwise iterate one character per note.
+    notes.extend(n for n in _str_list(ddoc.get("notes")))
+
+    contract = {
+        "agent": "review-validator",
+        "category": "VALIDATED",
+        "source_branch": str(ctx.get("source_branch") or (docs.get("SEMANTIC") or {}).get(
+            "source_branch") or ""),
+        "target_branch": str(ctx.get("target_branch") or (docs.get("SEMANTIC") or {}).get(
+            "target_branch") or ""),
+        "findings": ordered,
+        "verdict": verdict,
+        "metrics": {
+            "total": len(ordered),
+            **{s.lower(): per_sev[s] for s in SEVERITY_RANK},
+            "coverage_pct": coverage_pct,
+            "ux_impact_count": sum(1 for f in ordered if f["ux_impact"] and f["in_diff"]),
+        },
+        "rejected_count": rejected_count,
+        "merged_count": merged_count,
+        "blocking_reason_ids": reason_ids,
+        "blocking_floor": floor_name,
+        "incomplete_inputs": incomplete,
+        "decision_errors": decision_errors,
+        "audit_log": audit,
+        "coverage_notes": notes,
+        "positive_observations": _str_list(ddoc.get("positive_observations")),
+    }
+    if repairs_log or defects_log:
+        contract["contract_health"] = {"repaired": len(repairs_log), "rejected": len(defects_log),
+                                       "repairs": repairs_log, "defects": defects_log}
+
+    _atomic_write(os.path.join(out_dir, "VALIDATED.json"), json.dumps(contract, indent=2) + "\n")
+    _atomic_write(os.path.join(out_dir, "VALIDATED.md"),
+                  _render_validated_md(contract, escalated, skipped))
+    defects_md = os.path.join(out_dir, "CONTRACT-DEFECTS.md")
+    if "contract_health" in contract:
+        _atomic_write(defects_md, _render_defects_md(contract["contract_health"]))
+    elif os.path.exists(defects_md):
+        os.remove(defects_md)   # a stale banner from an earlier run would describe the wrong review
+    return 2 if incomplete else 0
+
+
+def _one_line(v, limit=200):
+    s = " ".join(str(v or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _render_validated_md(c, escalated, skipped):
+    """The human-readable companion. Everything in it comes from the contract dict `c`."""
+    m = c["metrics"]
+    out = [
+        "# Validated Review Findings", "",
+        f"**Source:** {c['source_branch'] or '(unknown)'}  ",
+        f"**Target:** {c['target_branch'] or '(unknown)'}  ",
+        f"**Validated at:** {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}  ",
+        f"**Verdict:** {c['verdict']}  ",
+        f"**Blocking floor:** {c['blocking_floor']}", "",
+    ]
+    if c["incomplete_inputs"]:
+        out += ["## Incomplete inputs", "",
+                "The review did not finish, so the verdict is INCOMPLETE whatever the findings say.", ""]
+        out += [f"- `{p['input']}`: {p['problem']}" for p in c["incomplete_inputs"]] + [""]
+
+    actions = {}
+    for a in c["audit_log"]:
+        k = a["action"] if a["action"] != "reject" else f"reject:{a['reason']}"
+        actions[k] = actions.get(k, 0) + 1
+    out += ["## Summary", "", "| Status | Count |", "|---|---|"]
+    out += [f"| {s} | {m[s.lower()]} |" for s in SEVERITY_RANK]
+    out += [f"| Escalated (in-diff, below HIGH confidence) | {len(escalated)} |",
+            f"| Reported only (out of diff) | {sum(1 for f in c['findings'] if not f['in_diff'])} |"]
+    out += [f"| Rejected ({r}) | {actions.get('reject:' + r, 0)} |" for r in REJECT_REASONS]
+    out += [f"| Merged (duplicate) | {c['merged_count']} |",
+            f"| Unreviewed by the validator | {actions.get('unreviewed', 0)} |", ""]
+
+    if "coverage" in skipped or m["coverage_pct"] is None:
+        cov = "UNABLE TO MEASURE"
+    elif any(f.get("tool") == "coverage" for f in c["findings"]):
+        cov = f"BELOW THE PROJECT GATE ({m['coverage_pct']}%)"
+    else:
+        cov = f"MEETS THE PROJECT GATE ({m['coverage_pct']}%)"
+    out += ["## Test coverage", "", f"**Status:** {cov}", ""]
+
+    def block(f):
+        lines = [f"#### [{f['id']}] {_one_line(f['title'])}", "",
+                 f"**Category:** {f['category']} · **Confidence:** {f['confidence']} · "
+                 f"**Scope:** {'in-diff' if f['in_diff'] else 'out-of-diff'} · "
+                 f"**From:** {', '.join(f['source_ids'])}  ",
+                 f"**Location:** `{f['location']}`"
+                 + ("".join(f", `{loc}`" for loc in f.get("related_locations", []))), ""]
+        if f["evidence"]:
+            lines += [f["evidence"], ""]
+        if f["recommendation"]:
+            lines += [f"**Remediation:** {f['recommendation']}", ""]
+        return lines
+
+    in_diff = [f for f in c["findings"] if f["in_diff"]]
+    out += ["## Findings", ""]
+    if not c["findings"]:
+        out += ["No findings.", ""]
+    for s in SEVERITY_RANK:
+        group = [f for f in in_diff if f["severity"] == s]
+        if group:
+            out += [f"### {s}", ""]
+            for f in group:
+                out += block(f)
+    esc = [f for f in c["findings"] if f["id"] in escalated]
+    if esc:
+        out += ["### Escalated (a human must look)", "",
+                "Listed above at their own severity; they drive INCOMPLETE because the validator "
+                "could not confirm them to HIGH confidence.", ""]
+        out += [f"- `{f['id']}` {_one_line(f['title'])}" for f in esc] + [""]
+    out_diff = [f for f in c["findings"] if not f["in_diff"]]
+    if out_diff:
+        out += ["### Reported only (out of diff)", "",
+                "Severity unchanged. This change did not introduce these, so they do not block it.",
+                ""]
+        for f in out_diff:
+            out += block(f)
+
+    out += ["## Audit log", "", "| Source id | Source | Action | Reason | Detail |", "|---|---|---|---|---|"]
+    out += [f"| {a['source_id']} | {a['source']} | {a['action']} | {a['reason'] or ''} | "
+            f"{_one_line(a['detail'], 160).replace('|', '/')} |" for a in c["audit_log"]]
+    out.append("")
+    if c["decision_errors"]:
+        out += ["## Decisions that could not be applied", ""]
+        out += [f"- `{e['source_id']}`: {e['error']}" for e in c["decision_errors"]] + [""]
+    if c["coverage_notes"]:
+        out += ["## Notes", ""] + [f"- {n}" for n in c["coverage_notes"]] + [""]
+    if c["positive_observations"]:
+        out += ["## Positive observations", ""] + [f"- {p}" for p in c["positive_observations"]] + [""]
+    if "contract_health" in c:
+        out += ["See `CONTRACT-DEFECTS.md` for findings the contract step repaired or dropped.", ""]
+    return "\n".join(out)
+
+
+def _render_defects_md(h):
+    """The tooling-owner banner. The raw object is included so a dropped finding stays recoverable."""
+    out = ["# Contract defects", "",
+           "For the TOOLING OWNER, not the change author: these are defects in what the review agents "
+           "emitted, not in the change under review.", "",
+           f"- Repaired: {h['repaired']}", f"- Dropped (nothing actionable left): {h['rejected']}", ""]
+    if h["repairs"]:
+        out += ["## Repairs", ""]
+        out += [f"- `{r['source_id']}`: {'; '.join(r['repairs'])}" for r in h["repairs"]] + [""]
+    if h["defects"]:
+        out += ["## Dropped", ""]
+        out += [f"- `{d['source_id']}`: {', '.join(d['defects'])} — raw: "
+                f"`{_one_line(json.dumps(d['raw'], default=str), 400)}`" for d in h["defects"]] + [""]
+    return "\n".join(out)
+
+
+# --- command line -------------------------------------------------------------------------------
+
+_SCHEMA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas")
+_SCHEMAS = {"agent-contract.schema.json": contract_schema,
+            "validator-decisions.schema.json": decisions_schema}
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="contract.py", description=__doc__.split("\n", 1)[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    fin = sub.add_parser("finalize", help="write VALIDATED.json/.md from the agent artifacts")
+    fin.add_argument("--dir", default=".code-review", help="artifact directory (default .code-review)")
+    fin.add_argument("--floor", default=None,
+                     help="blocking floor BLOCKER|MAJOR|MINOR; default $CODE_REVIEW_BLOCKING_FLOOR, "
+                          "else MINOR")
+    sch = sub.add_parser("schema", help="print or regenerate the committed JSON schemas")
+    sch.add_argument("--write", action="store_true", help="rewrite the files under schemas/")
+    args = ap.parse_args(argv)
+
+    if args.cmd == "schema":
+        for name, gen in _SCHEMAS.items():
+            text = json.dumps(gen(), indent=2) + "\n"
+            if args.write:
+                _atomic_write(os.path.join(_SCHEMA_DIR, name), text)
+                print(f"wrote schemas/{name}")
+            else:
+                print(f"--- {name}\n{text}")
+        return 0
+
+    rc = finalize(args.dir, args.floor)
+    with open(os.path.join(args.dir, "VALIDATED.json"), encoding="utf-8") as fh:
+        doc = json.load(fh)
+    for p in doc["incomplete_inputs"]:
+        print(f"finalize: {p['input']}: {p['problem']}", file=sys.stderr)
+    for e in doc["decision_errors"]:
+        print(f"finalize: decision for {e['source_id']!r} ignored: {e['error']}", file=sys.stderr)
+    print(f"{doc['verdict']}: {doc['metrics']['total']} finding(s), floor {doc['blocking_floor']}, "
+          f"wrote {os.path.join(args.dir, 'VALIDATED.json')}")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+

@@ -1,134 +1,127 @@
 ---
 name: security-scan
+description: "Sweeps a whole repository with bandit, gitleaks, trivy and checkov, then reads up to 15 files for the authorization, data-exposure and injection gaps no scanner can decide, and reports findings by severity with file:line and a fix. Use when auditing a repository, before a release, or when inheriting an unfamiliar codebase. Not for a branch or pull-request diff (use /security-review or code-review-core:review); not for lint and secret findings on changed files only (use code-review-core:review-scan)."
+when_to_use: "audit this repo, security sweep, is this repo safe to ship, scan the whole codebase for vulnerabilities, pre-release security check"
+argument-hint: "[path, default: the current directory]"
+allowed-tools: Read, Grep, Glob, Bash(command -v *), Bash(mktemp -d), Bash(bandit *), Bash(gitleaks *), Bash(trivy *), Bash(checkov *)
+disallowed-tools: Write, Edit, NotebookEdit
 license: MIT
-description: Point-in-time security sweep of one repository — runs bandit, gitleaks, trivy and checkov over the whole tree, then reads code for the authorization, data-exposure and injection gaps no scanner can decide. Produces findings grouped by severity with file:line citations and what to rotate or fix. Use when auditing a repo, before a release, when inheriting an unfamiliar codebase, or when someone asks "is this safe to ship". Not for reviewing a single pull request — a diff-scoped review is a different job.
-argument-hint: "[path — defaults to the current directory]"
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(find:*), Bash(bandit:*), Bash(gitleaks:*), Bash(trivy:*), Bash(checkov:*), Bash(mktemp:*), Bash(command:*), Bash(echo:*)
 ---
 
-# Security Scan
+# Security scan
 
-A whole-tree audit of one repository. Scanners first, judgement second — in that order, and the
-order is the point.
+Target: `$ARGUMENTS` (the current directory when empty).
 
-## Why the scanners run first
+This is a whole-tree audit, so pre-existing debt is the point: report everything, not only what a
+recent change touched. Scanners run first because they find pattern-shaped problems with a rule id
+and severity for less context than reading code; the judgement pass then covers what patterns cannot
+decide.
 
-`bandit`, `gitleaks`, `trivy` and `checkov` find the pattern-shaped half of this work better than
-reading the code does, and they say more about each finding than a reader can: a rule id, a
-severity, a confidence, and a link to the explanation. Reading every file by hand to look for
-`shell=True` spends a large amount of context re-deriving what a `grep`-shaped tool already knows.
+Shell variables do not persist between Bash calls, so write the target and the report directory
+literally into every command.
 
-What the scanners cannot do is reason about *this* codebase: whether a route's permission check is
-the right one, whether a query is scoped to the tenant as well as the id, whether a reported CVE is
-reachable from any code path that actually runs. That is the second pass, and bounding it is what
-keeps this skill finishing.
+## Workflow
 
-## Scope, and how it differs from a pull-request review
+Copy this checklist and tick it off:
 
-This is a sweep of the **whole tree**, so pre-existing debt is the point rather than noise. Do not
-filter findings by diff. A pull-request review does the opposite — it scopes to changed lines
-precisely so a reviewer is not handed the repository's entire backlog — and if that is what is
-wanted, this is the wrong tool.
-
-## Step 1 — Scope the scan
-
-Use the path that was passed, or the current working directory.
-
-```bash
-TARGET="${1:-.}"
-find "$TARGET" -type f \
-  \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \
-     -o -name '*.go' -o -name '*.rb' -o -name '*.tf' \) \
-  | grep -vE '(node_modules|__pycache__|\.git/|dist/|build/|vendor/|\.terraform)' \
-  | head -200
+```
+- [ ] 1. Scope the tree
+- [ ] 2. Run each scanner
+- [ ] 3. Judgement pass (at most 15 files)
+- [ ] 4. Report
+- [ ] 5. Verify
 ```
 
-Note roughly how many files there are and what the tree is made of. That number goes in the
-summary, and it is what makes "no findings" mean something.
+### 1. Scope the tree
 
-## Step 2 — Run the scanners
+Use Glob on the target for `**/*.{py,ts,tsx,js,jsx,go,rb,java,tf,yaml,yml}` and set aside
+`node_modules`, `vendor`, `dist`, `build`, `.terraform` and `__pycache__`. Note the file count and the
+main languages; the count goes in the report so that "no findings" has a denominator.
 
-Each tool is optional. A missing binary is recorded and skipped, never fatal: a sweep that aborts
-because one tool is absent reports nothing about the four that were present.
+If the target does not exist, stop and report `Target not found: <path>`.
 
-**A non-zero exit means "found something", not "failed".** Treating a scanner's exit code as an
-error is the single most common way these tools end up wrapped in `|| true` and silently disabled.
+### 2. Run each scanner
 
-```bash
-TARGET="${1:-.}"
-OUT="$(mktemp -d)"
+Create one report directory with `mktemp -d` and reuse its literal path. Then, for each tool, check it
+with `command -v <tool>` and run it only if present:
 
-if command -v bandit >/dev/null; then
-  bandit -r "$TARGET" -f json -q > "$OUT/bandit.json" 2>/dev/null
-else echo "SKIPPED: bandit (pip install bandit)"; fi
+| Tool | Command | Covers |
+| --- | --- | --- |
+| bandit | `bandit -r <target> -f json -o <dir>/bandit.json -q` | Python injection, weak crypto, unsafe deserialization |
+| gitleaks | `gitleaks git <target> --redact --no-banner --report-format json --report-path <dir>/gitleaks.json` | committed credentials, including history |
+| trivy | `trivy fs --scanners vuln,secret,misconfig --format json --output <dir>/trivy.json <target>` | dependency CVEs, secrets, IaC misconfiguration |
+| checkov | `checkov -d <target> -o json --compact --quiet --output-file-path <dir>` (writes `results_json.json`) | Terraform, CloudFormation, Kubernetes policy |
 
-if command -v gitleaks >/dev/null; then
-  gitleaks detect --source "$TARGET" --report-format json \
-    --report-path "$OUT/gitleaks.json" --redact >/dev/null 2>&1
-else echo "SKIPPED: gitleaks"; fi
+Record a status for each tool, from this closed set:
 
-if command -v trivy >/dev/null; then
-  trivy fs --scanners vuln,secret,misconfig --format json \
-    -o "$OUT/trivy.json" "$TARGET" >/dev/null 2>&1
-else echo "SKIPPED: trivy"; fi
-
-if command -v checkov >/dev/null; then
-  checkov -d "$TARGET" --output json --compact > "$OUT/checkov.json" 2>/dev/null
-else echo "SKIPPED: checkov (pip install checkov)"; fi
-
-echo "raw output in $OUT"
-```
-
-What each one covers:
-
-| Tool | Finds |
+| Status | Meaning |
 | --- | --- |
-| `bandit` | Python: injection, weak crypto, unsafe deserialization, `shell=True` |
-| `gitleaks` | Committed credentials, across history as well as the working tree |
-| `trivy` | Dependency CVEs, secrets, infrastructure misconfiguration |
-| `checkov` | Terraform / CloudFormation / Kubernetes policy violations |
+| `RAN` | The report file exists and parses. |
+| `SKIPPED` | Not installed, or no files of its kind in the tree. Say which. |
+| `FAILED` | Installed but produced no usable report (for example trivy could not download its database offline). Quote the first error line. |
 
-Read the JSON files that exist and triage them yourself.
+A non-zero exit code from these tools usually means "found something", so judge success by the report
+file, not the exit code. If `gitleaks git` reports that the target is not a git repository, run
+`gitleaks dir <target>` with the same flags; older gitleaks releases use `gitleaks detect --source <target>`.
 
-**Never quote the matched line for a secret finding.** `gitleaks` redacts on purpose, and `trivy`'s
-secret findings must be treated identically — for a secret, the cited line *is* the credential, and
-pasting it into a report moves the leak somewhere new. Cite `file:line` and the rule, and say what
-needs rotating.
+Read each report and triage it. For secret findings, cite `file:line`, the rule id and what to rotate,
+and leave the matched value out of the report: that value is the credential, and quoting it copies the
+leak into a new place.
 
-## Step 3 — Read what no scanner can decide
+### 3. Judgement pass (at most 15 files)
 
-Then cover, by reading code, only the four things a pattern cannot settle:
+Pick files from the scanner hits and from the authentication, authorization and entry-point code
+found in step 1. Read them for:
 
-- **Authorization gaps.** A route or handler with no permission check. A query filtered by resource
-  id but not by tenant or organization. A check that fails open — catches an error and proceeds.
-- **Sensitive data exposure.** Personal data in log lines, credentials in error messages or stack
-  traces, data crossing a classification boundary.
-- **Injection the tools missed.** Dynamic SQL or command construction they did not flag — most
-  often because a helper function hides the concatenation from the pattern.
-- **Dependency risk in context.** `trivy` reports the CVE; you decide whether the vulnerable code
-  path is reachable from anything this repository actually runs.
+- **Authorization gaps**: a handler with no permission check; a query scoped by id but not by tenant;
+  a check that catches an error and proceeds.
+- **Sensitive data exposure**: personal data in logs; credentials in error messages; data crossing a
+  classification boundary.
+- **Injection the tools missed**: SQL or shell built through a helper that hides the concatenation.
+- **Dependency risk in context**: whether code this repo runs actually reaches a CVE's vulnerable path.
 
-**Bound this pass: read at most 15 files.** Choose them from the scanner hits and from whatever the
-Step 1 listing shows to be authentication, authorization or entry-point code. Name which files you
-read — an unbounded "I looked at the code" pass is the part of a security review that silently does
-not happen.
+The cap keeps the pass finishing; list every file you read so the reader can see what was covered.
 
-## Step 4 — Report
+### 4. Report
 
-Group by severity and lead with the count, so an empty result is legible as a result:
+Severities are a closed set: `BLOCKER` (exploitable now, or a live credential exposed), `MAJOR` (a real
+weakness that needs a deliberate fix), `MINOR` (hardening or latent risk). Use this template:
 
+```markdown
+## Security scan: <target>
+
+<N> files in scope (<languages>) · <b> BLOCKER · <m> MAJOR · <n> MINOR
+
+| Scanner | Status | Note |
+| --- | --- | --- |
+| bandit | RAN | |
+| gitleaks | RAN | |
+| trivy | FAILED | could not download vulnerability DB |
+| checkov | SKIPPED | no IaC files |
+
+Files read in the judgement pass: <list>
+
+### BLOCKER
+- `path/to/file.py:42` [gitleaks: aws-access-token] AWS key committed in history. Fix: rotate the key, then purge it from history.
+
+### MAJOR
+- `api/orders.py:88` [judgement] Order lookup filters by id but not tenant, so any user can read any order. Fix: add the tenant filter.
+
+### MINOR
+(none)
 ```
-N files scanned · B blockers · M majors · m minors
-Scanners run: bandit, gitleaks, trivy    Skipped: checkov (not installed)
-Files read in the judgement pass: 9 (listed below)
-```
 
-Then one entry per finding:
+Write `(none)` under an empty severity. A skipped or failed scanner stays in the table: "no findings"
+from a tool that never ran reads exactly like a pass.
 
-- **BLOCKER** — exploitable now, or a live credential is exposed. Say what to rotate.
-- **MAJOR** — a real weakness needing a deliberate fix.
-- **MINOR** — hardening, defence in depth, or a latent risk.
+### 5. Verify
 
-Each entry carries `file:line`, the rule id where a scanner produced it, what an attacker gets, and
-the fix. If a tool was skipped, say so in the summary — the reader needs to know which half of the
-sweep did not run, because "no findings" from a tool that never executed looks exactly like a pass.
+Before returning, re-read the report and confirm: all four scanners have a status row; every finding
+has `file:line`, a source (scanner rule id or `judgement`) and a fix; the judgement-pass file list has
+at most 15 entries; and no secret finding contains the matched value.
+
+## Without a checkout
+
+With no shell or files (for example on the web), ask for the relevant files or existing scanner
+output to be pasted. Run step 3 over what was pasted, mark every scanner `SKIPPED (no shell)`, and use
+the same report template.

@@ -1,116 +1,95 @@
 ---
 name: git-workflows
+description: "Use when starting a branch, when a branch is behind its base or a push is rejected, when choosing rebase or merge, tagging a release, or adopting or auditing CODEOWNERS. Team rules for each."
 license: MIT
-description: Branching model, branch naming, how to bring a branch current without rewriting shared history, force-push rules, conflict resolution and tagging. Use when starting a branch, when a branch has fallen behind its base, when a push is rejected as non-fast-forward, or when deciding between rebase and merge.
 ---
 
 # Git Workflows
 
-Forge-neutral. Nothing here names a hosting provider or its CLI — the commands are plain
-`git`. Where a step is better done server-side (rebasing an open pull request, merging,
-deleting a merged branch), a forge adapter owns that call; this skill only says *when* to
-reach for it.
+Forge-neutral: the commands are plain `git`. Where a step is better done server-side (rebasing
+an open pull request, merging, deleting a merged branch), use the forge plugin for that call.
+Branch names come from `issue-tracker-core:branch-and-title-conventions` when that plugin is
+installed; otherwise use `<type>/<short-description>`.
 
-## Branching model
+## Branching
 
-- Trunk is the only long-lived branch. Everything else is short-lived and merges back.
-- One branch per unit of work — one ticket, one fix, one refactor. A branch that carries
-  two unrelated changes cannot be reviewed or reverted cleanly.
-- Branch **from the trunk's remote-tracking ref**, never from another feature branch and
-  never from a stale local copy of the trunk.
-- No direct commits to the trunk. Protection rules should enforce it; assume they do not
-  and behave as if they did.
-- Delete the branch once it is merged. A forge can usually do this automatically.
+- Trunk is the only long-lived branch. One branch per unit of work, so it can be reviewed and
+  reverted on its own.
+- Start from a synced trunk, because a branch cut from a stale local copy starts behind:
 
-```sh
-git checkout main && git pull --ff-only origin main
-git checkout -b PROJ-123-add-export-endpoint
-```
+  ```sh
+  git switch main && git pull --ff-only origin main
+  git switch -c <branch-name>
+  ```
 
-`--ff-only` refuses to invent a merge commit. If it errors, local `main` has commits of its
-own — inspect them before doing anything else. Do not plain-pull past that signal.
+  `--ff-only` refuses to create a merge commit. If it errors, local `main` has commits of its own;
+  inspect them (`git log origin/main..main`) before doing anything else.
+- Commit to a feature branch, not to trunk, even when trunk is not protected.
 
-## Branch naming
+## Rebase or merge
 
-Pattern: `<type>/PROJ-123-short-description`, lowercase and hyphen-separated. The `<type>`
-prefix is optional when the ticket ID is present; be consistent within a repo.
+| Situation | Route |
+| --- | --- |
+| Local trunk behind its remote | `git pull --ff-only origin main` |
+| Feature branch not yet pushed | `git fetch origin && git rebase origin/main` |
+| Feature branch pushed, review open | Rebase server-side through the forge, so nobody else's copy is rewritten locally |
+| Server-side rebase reports conflicts | Rebase locally, then `git fetch` and `git push --force-with-lease` |
+| Finished branch into trunk | Merge through the forge; the merge is the audit record |
 
-Extract the ticket ID from the current branch when a commit trailer or a template needs it:
+Rebase onto the remote-tracking ref (`origin/main`), not local `main`, which may be stale.
 
-```sh
-BRANCH=$(git branch --show-current)
-TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
-```
-
-## Rebase vs merge
-
-| Situation | Route | Why |
-| --- | --- | --- |
-| Local trunk behind its remote | `git pull --ff-only origin main` | No merge commit, no rewrite. |
-| Feature branch not yet pushed | `git rebase origin/main` | Nothing shared to rewrite — safe. |
-| Feature branch already pushed, review open | Server-side rebase via the forge | The forge rewrites the branch it owns; no local force push. |
-| Pushed branch with no review open yet | Do nothing — open the review | Rebasing before review buys nothing. |
-| Integrating a finished branch into trunk | Merge, through the forge | The merge commit is the audit record. |
-
-**Rebase your own unshared work. Merge other people's.** Inside a feature branch, rebasing
-onto the latest trunk keeps history linear and makes the diff readable. Once a branch is
-shared, rewriting it costs every collaborator a reset — which is why the server-side route
-exists.
-
-Always rebase onto the **remote-tracking ref** (`origin/main`), not the bare local name.
-`git rebase main` rebases onto whatever stale local `main` happens to be, which is a
-different and usually wrong base.
-
-## Being behind the base is not an error
-
-A branch behind its base does not block a push and usually does not need action. Many forges
-rebase each change onto the current trunk at merge time. Bring a branch current when you
-actually need the newer base — to reproduce a fix, to clear a conflict, to get a green
-pipeline that depends on a trunk change — not as a reflex.
+**Being behind the base is not an error.** A branch behind trunk can still be pushed and
+reviewed, and many forges rebase at merge time. Bring it current when you need the newer base:
+to pick up a fix, clear a conflict, or get a pipeline green that depends on a trunk change.
 
 ## Force push
 
-| Command | Allowed? |
-| --- | --- |
-| `git push --force` | Never. It discards commits you never fetched, with no check. |
-| `git push --force-with-lease` | On a feature branch you own, after `git fetch`. |
-| Either, against trunk | Never. |
+Use `--force-with-lease` on your own feature branch, right after `git fetch`: the lease only
+protects against commits you have not fetched. Bare `--force`, and any force push to trunk or
+another protected branch, are off the table. If `dev-guardrails` is installed, its Bash hook
+enforces this and its message says what to run instead.
 
-`--force-with-lease` only protects you against commits you have already fetched — fetch
-first or the lease is checking a stale value. When a server-side rebase hands back
-conflicts, resolving locally and pushing the rewritten feature branch with a lease is the
-normal way to finish.
+A push rejected as non-fast-forward means the remote has commits you lack: fetch, inspect them,
+then rebase or merge. Overwriting the remote to make the push succeed discards them.
 
-If a push is rejected as non-fast-forward: fetch, look at what arrived, and re-check. If it
-still will not fast-forward, resolve locally. Never rewrite a shared ref to win an argument
-with the remote.
+## After a conflict
 
-## Conflict resolution
-
-1. `git rebase origin/main` (remote-tracking ref, always).
-2. Resolve each file on its merits. "Take theirs" is a decision, not a default.
-3. `git add` the resolved files, then `git rebase --continue`.
-4. **Re-run the full test suite.** A textually clean conflict resolution can still be
-   semantically wrong — this is the single most common way a rebase breaks a branch.
-5. Run the pre-commit hooks before committing.
-6. If the branch was already pushed, the follow-up push needs a lease (see above).
-
-## Clean history
-
-- Each commit should build and pass tests on its own. A bisect is only as good as this.
-- Squash fixup commits into the commit they fix before the branch is reviewed, not after.
-- Write the message for the person reading `git log` in a year — see `commit-standards`.
-- Never commit generated artifacts, lockfile churn unrelated to the change, or debugging
-  leftovers. `git add -p` if the working tree has drifted.
+1. Resolve each file on its merits; taking one side wholesale is a decision, not a default.
+2. `git add` the resolved files, then `git rebase --continue`.
+3. Re-run the full test suite. A textually clean resolution can still be semantically wrong.
 
 ## Tags
 
-Tags use `vX.Y.Z`. For which component to bump, see `commit-standards`.
+Release tags are annotated `vX.Y.Z` (`git tag -a v1.3.0 -m "<summary>"`, then
+`git push origin v1.3.0`). A pushed tag is permanent: fix a wrong one by cutting the next
+version, because anything that already fetched the old tag keeps the old commit.
 
-```sh
-git tag -a v1.3.0 -m "feat: add search filters"
-git push origin v1.3.0
-```
+## CODEOWNERS
 
-Tags are immutable once pushed. A wrong tag is fixed by cutting a new one, not by moving
-the old one — moved tags silently break anything that already fetched them.
+The plugin ships a baseline at `${CLAUDE_PLUGIN_ROOT}/templates/CODEOWNERS`. Read it before
+adopting or auditing an owners file; its comments carry the reasoning. The rules:
+
+- **One file, one location**: repository root, `.github/`, `.gitlab/` or `docs/`. A second copy
+  is dead config, because each forge reads only one.
+- **Every rule names the owning group** (`@org/team`). An author cannot approve their own change,
+  so a rule owned by one person requires nothing on that person's changes. Individuals are added
+  alongside the group, never instead of it.
+- **Catch-all first.** Only the last matching pattern applies, so a `*` rule placed below others
+  silently replaces them. Add a path rule only to give that path extra owners.
+- **Every rule has an owner.** A pattern with no owner marks the path as unowned.
+- **An owner must be a member of the project**, and a group from another namespace must be shared
+  with it. A handle that resolves to a real user outside the project gates nothing, and no tool
+  reports it.
+
+To audit, check the file against those rules. If `dev-guardrails` is installed, its session-start
+hook reports the textual ones (duplicate locations, ownerless rules, sole individual owners,
+malformed handles, shadowed rules). Membership needs the forge.
+
+**Verify** on a live open request that is not the one adding the file: forges evaluate
+CODEOWNERS from the target branch, so the adoption request shows no code-owner rule at all.
+After it merges, open the approval state of the next request and confirm every code-owner rule
+lists a non-empty set of eligible approvers. Without a forge connection, report the file as
+"not yet verified" instead of passing it.
+
+Without a checkout (web), give the user the commands above to run rather than running them, and
+audit a pasted CODEOWNERS file against the rules.

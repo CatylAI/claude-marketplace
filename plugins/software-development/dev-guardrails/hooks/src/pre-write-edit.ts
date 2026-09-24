@@ -1,29 +1,30 @@
-// PreToolUse hook: Write|Edit secret hygiene.
+// PreToolUse hook: Write | Edit | NotebookEdit secret hygiene and the plugin-cache gate.
 //
 // The write-side sibling of Gate A. Gate A stops a secret reaching the TRANSCRIPT; this
 // stops one reaching a FILE, where it goes on to reach git history and everyone with a
 // clone. Both directions matter and neither covers the other.
 //
-// Exit codes: 0 = allow, 1 = warn (advisory, non-blocking), 2 = block.
+// Exit codes: 0 = allow, 2 = block (stderr becomes the deny reason Claude reads). There is
+// no advisory exit here. Exit 1 is a "non-blocking error" in Claude Code: the user sees a
+// hook-error notice and Claude sees nothing, so a warning sent that way reached no one who
+// could act on it. The one advisory this hook used to carry (the hardcoded-shebang nit) now
+// lives in post-write-edit.ts, which reports through additionalContext.
 //
-// ORDERING IS LOAD-BEARING, and it has been wrong before. `warn()` is `never`-typed and
-// calls process.exit(1), so calling it before the credential checks returns from the hook
-// ahead of every security gate: a `.sh` file containing a hardcoded shebang AND a live key
-// was written unchallenged, because a STYLE nit terminated the hook in front of a SECURITY
-// one. The warning is therefore COLLECTED and emitted after the blocks.
+// FAIL DIRECTION: OPEN. Unparseable stdin reads as `{}` and is allowed, and an uncaught
+// throw exits 1, which Claude Code treats as a non-blocking error (the write proceeds and
+// the user sees the first stderr line). A false block here stops every file write in the
+// session, which is not a cheap failure, so the gate only blocks on a positive finding.
 //
-// The invariant to preserve when editing this file: nothing that exits may run before the
-// last block(). Advisory output goes at the bottom.
-//
-// A SECOND ordering constraint now lives in main(), and it points the other way. The
-// plugin-cache gate judges the PATH, not the content, so it must sit ABOVE the
-// `if (!content) allow()` early return — see the comment at its call site.
+// ORDERING: both gates block, and the credential gate runs first so its message is the one
+// read. The plugin-cache gate judges the PATH, so it must not sit behind an "empty content"
+// early return (a pure-deletion Edit carries no text but still targets the doomed copy).
 
 import { readStdin } from './lib/stdin.ts';
-import { block, warn, allow } from './lib/output.ts';
+import { block, allow } from './lib/output.ts';
+import type { HookInput } from './lib/types.ts';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
-import { HARDCODED_BASH_PATH } from './lib/patterns.ts';
+import { resolve, posix } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { CONTENT_PATTERNS, TOKEN_PATTERNS, findSecrets, type SecretMatch } from './lib/secrets.ts';
 
 /**
@@ -64,7 +65,11 @@ export interface WriteSecretDecision {
  */
 export function evaluateWriteSecrets(content: string): WriteSecretDecision | null {
   if (!content) return null;
-  const hits: SecretMatch[] = findSecrets(content, WRITE_PATTERNS);
+  return secretDecision(findSecrets(content, WRITE_PATTERNS));
+}
+
+/** Build the block message from a list of hits, or null when there are none. */
+function secretDecision(hits: readonly SecretMatch[]): WriteSecretDecision | null {
   const first = hits[0];
   if (!first) return null;
 
@@ -85,6 +90,121 @@ export function evaluateWriteSecrets(content: string): WriteSecretDecision | nul
   containing "example", "placeholder", "test" or "changeme" is recognised as such
   and passes.`,
   };
+}
+
+/**
+ * The file as it will read after an Edit, or null when that cannot be computed (no
+ * old_string, or old_string not found — the Edit tool itself will then refuse the call).
+ *
+ * Splice by index rather than String.replace: a replacement string containing `$&` or `$1`
+ * would otherwise be expanded as a regex back-reference and the simulation would lie.
+ */
+export function applyEdit(
+  before: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+): string | null {
+  if (!oldString) return null;
+  const at = before.indexOf(oldString);
+  if (at === -1) return null;
+  if (replaceAll) return before.split(oldString).join(newString);
+  return before.slice(0, at) + newString + before.slice(at + oldString.length);
+}
+
+/**
+ * Credentials present in `after` that `before` did not already contain, counted as a
+ * multiset so a second copy of an existing value still counts as new.
+ */
+export function introducedSecrets(before: string, after: string): SecretMatch[] {
+  const key = (m: SecretMatch): string => `${m.patternName}\u0000${m.value}`;
+  const existing = new Map<string, number>();
+  for (const m of findSecrets(before, WRITE_PATTERNS)) {
+    existing.set(key(m), (existing.get(key(m)) ?? 0) + 1);
+  }
+  return findSecrets(after, WRITE_PATTERNS).filter((m) => {
+    const left = existing.get(key(m)) ?? 0;
+    if (left === 0) return true;
+    existing.set(key(m), left - 1);
+    return false;
+  });
+}
+
+/**
+ * Judge an Edit IN CONTEXT, not just its replacement text.
+ *
+ * Scanning `new_string` alone misses the realistic case for the assignment-shaped patterns:
+ * an Edit that swaps `os.environ["DB_PASSWORD"]` for a literal leaves `password = ` in the
+ * unchanged text, so the replacement on its own has no assignment shape to match. So the
+ * edit is applied to the current file in memory and only credentials the edit INTRODUCES are
+ * reported. Pre-existing matches stay out of it: they were judged when they were written,
+ * and blocking an unrelated edit to a file that already holds a fixture would be noise.
+ *
+ * `before` is null when the file cannot be read; the replacement text is still scanned, so
+ * the gate never gets weaker than it was.
+ */
+export function evaluateEditSecrets(
+  before: string | null,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+): WriteSecretDecision | null {
+  const hits: SecretMatch[] = findSecrets(newString, WRITE_PATTERNS);
+  const after = before === null ? null : applyEdit(before, oldString, newString, replaceAll);
+  if (before !== null && after !== null) {
+    const seen = new Set(hits.map((h) => `${h.patternName}\u0000${h.value}`));
+    for (const m of introducedSecrets(before, after)) {
+      if (!seen.has(`${m.patternName}\u0000${m.value}`)) hits.push(m);
+    }
+  }
+  return secretDecision(hits);
+}
+
+/** Largest file the Edit simulation will read. Beyond it, only new_string is scanned. */
+const MAX_EDIT_CONTEXT_BYTES = 2 * 1024 * 1024;
+
+function readForEdit(filePath: string): string | null {
+  try {
+    if (!filePath || statSync(filePath).size > MAX_EDIT_CONTEXT_BYTES) return null;
+    return readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/** What a governed tool call writes, and where. */
+export interface WriteTarget {
+  readonly tool: 'Write' | 'Edit' | 'NotebookEdit';
+  readonly filePath: string;
+  /** The text this call puts on disk: content, new_string, or new_source. */
+  readonly written: string;
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * The tools that write files, and the field each uses. NotebookEdit is included because it
+ * writes arbitrary cell source to disk exactly as Write does; leaving it out made a notebook
+ * cell the one way past both gates. (MultiEdit is not a current Claude Code tool.)
+ */
+export function extractWriteTarget(input: HookInput): WriteTarget | null {
+  const ti = input.tool_input ?? {};
+  switch (input.tool_name) {
+    case 'Write':
+      return { tool: 'Write', filePath: str(ti.file_path), written: str(ti.content) };
+    case 'Edit':
+      return { tool: 'Edit', filePath: str(ti.file_path), written: str(ti.new_string) };
+    case 'NotebookEdit':
+      return {
+        tool: 'NotebookEdit',
+        filePath: str(ti.notebook_path) || str(ti.file_path),
+        written: str(ti.new_source),
+      };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -150,27 +270,99 @@ export interface PluginCacheTarget {
  * the false positive this shape is chosen to exclude.
  *
  * Absolute, relative and `~`-prefixed paths all work: the scan looks for the triple
- * anywhere in the segment list, so whatever precedes it is irrelevant. Empty and `.`
- * segments are dropped first so `./x` and `a//b` do not shift the window.
+ * anywhere in the segment list, so whatever precedes it is irrelevant.
+ *
+ * The path is NORMALISED first, and each step closes a bypass:
+ *   - backslashes become `/` (Windows delivers native separators);
+ *   - `..` and `.` are collapsed, so `.claude/plugins/x/../cache/…` cannot hide the triple;
+ *   - segments compare case-insensitively, because macOS and Windows filesystems do.
+ *
+ * Besides the default `.claude/plugins` location, the plugin directories Claude Code can be
+ * pointed elsewhere by environment are honoured too: `$CLAUDE_CONFIG_DIR/plugins`,
+ * `$CLAUDE_CODE_PLUGIN_CACHE_DIR`, and each entry of `$CLAUDE_CODE_PLUGIN_SEED_DIR`. Each
+ * of those holds `cache/<marketplace>/<plugin>/<version>/…`.
  */
-export function parsePluginCachePath(filePath: string): PluginCacheTarget | null {
+export function parsePluginCachePath(
+  filePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PluginCacheTarget | null {
   if (!filePath) return null;
-  const segments = filePath.split('/').filter((s) => s !== '' && s !== '.');
+  const normal = normalizeToolPath(filePath);
+  const segments = normal.split('/').filter((s) => s !== '' && s !== '.');
+  const lower = segments.map((s) => s.toLowerCase());
 
   // i + 4 must be a real index: a cache path names at least a marketplace and a plugin.
   for (let i = 0; i + 4 < segments.length; i++) {
-    if (!CACHE_SEGMENTS.every((want, k) => segments[i + k] === want)) continue;
+    if (CACHE_SEGMENTS.every((want, k) => lower[i + k] === want)) {
+      return targetFrom(segments.slice(i + 3));
+    }
+  }
 
-    const maybeVersion = segments[i + 5];
-    const versioned = maybeVersion !== undefined && VERSION_SEGMENT.test(maybeVersion);
-    return {
-      marketplace: segments[i + 3] as string,
-      plugin: segments[i + 4] as string,
-      version: versioned ? (maybeVersion as string) : null,
-      inPlugin: segments.slice(versioned ? i + 6 : i + 5).join('/'),
-    };
+  // A relocated plugins directory: match by prefix, again case-insensitively.
+  const lowerNormal = normal.toLowerCase();
+  for (const root of pluginDirsFromEnv(env)) {
+    const prefix = (root.endsWith('/') ? root : root + '/') + 'cache/';
+    if (!lowerNormal.startsWith(prefix.toLowerCase())) continue;
+    const rest = normal.slice(prefix.length).split('/').filter((s) => s !== '');
+    if (rest.length >= 2) return targetFrom(rest);
   }
   return null;
+}
+
+/** `rest` starts at the marketplace segment. */
+function targetFrom(rest: readonly string[]): PluginCacheTarget {
+  const maybeVersion = rest[2];
+  const versioned = maybeVersion !== undefined && VERSION_SEGMENT.test(maybeVersion);
+  return {
+    marketplace: rest[0] as string,
+    plugin: rest[1] as string,
+    version: versioned ? (maybeVersion as string) : null,
+    inPlugin: rest.slice(versioned ? 3 : 2).join('/'),
+  };
+}
+
+/** Forward slashes, `.` and `..` collapsed. Relative paths stay relative. */
+export function normalizeToolPath(filePath: string): string {
+  return posix.normalize(filePath.replace(/\\/g, '/'));
+}
+
+/** Plugin directories relocated by environment, normalised. Never includes the default. */
+function pluginDirsFromEnv(env: NodeJS.ProcessEnv): string[] {
+  const dirs: string[] = [];
+  const configDir = (env.CLAUDE_CONFIG_DIR ?? '').trim();
+  if (configDir) dirs.push(posix.join(normalizeToolPath(configDir), 'plugins'));
+  const cacheDir = (env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? '').trim();
+  if (cacheDir) dirs.push(normalizeToolPath(cacheDir));
+  for (const seed of (env.CLAUDE_CODE_PLUGIN_SEED_DIR ?? '').split(/[:;]/)) {
+    if (seed.trim()) dirs.push(normalizeToolPath(seed.trim()));
+  }
+  return dirs;
+}
+
+/**
+ * The path with symlinks resolved, or null when nothing changes.
+ *
+ * A symlink in the working tree that points into the cache (`vendor/guardrails ->
+ * ~/.claude/plugins/cache/…`) otherwise writes into the installed copy under a path that
+ * names no cache at all. The target file may not exist yet (a Write creates it), so the
+ * deepest EXISTING ancestor is resolved and the remainder appended.
+ */
+export function resolveThroughSymlinks(filePath: string): string | null {
+  if (!filePath) return null;
+  let probe = resolve(filePath);
+  const tail: string[] = [];
+  while (!existsSync(probe)) {
+    const parent = resolve(probe, '..');
+    if (parent === probe) return null;
+    tail.unshift(probe.slice(parent.length).replace(/^[\\/]/, ''));
+    probe = parent;
+  }
+  try {
+    const real = posix.join(realpathSync(probe), ...tail);
+    return real === resolve(filePath) ? null : real;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -214,53 +406,34 @@ export function evaluatePluginCacheWrite(filePath: string, content: string): str
   transcript so a reviewer can see what was waived.`;
 }
 
-/** The portability nit. Advisory only, and deliberately emitted after every block. */
-export function evaluateShebang(filePath: string, content: string): string | null {
-  if (!filePath.endsWith('.sh')) return null;
-  if (!HARDCODED_BASH_PATH.test(content)) return null;
-  return `⚠️  SHEBANG: hardcoded interpreter path in ${filePath}
-
-  Found:    #!/bin/bash or #!/usr/bin/bash
-  Prefer:   #!/usr/bin/env bash  — portable across macOS and Linux
-            (/bin/bash is 3.2 on macOS; /usr/bin/bash does not exist there at all)
-  Also OK:  #!/usr/bin/env zsh   — when zsh features are intentional`;
-}
-
 async function main(): Promise<void> {
   const input = await readStdin();
-  const toolName = input.tool_name ?? '';
-  if (toolName !== 'Write' && toolName !== 'Edit') allow();
+  const target = extractWriteTarget(input);
+  if (target === null) allow();
 
   if ((process.env.CLAUDE_GUARDRAILS_OFF ?? '') === '1') allow();
 
-  const filePath = input.tool_input?.file_path ?? '';
-  // Write carries the whole file; Edit carries only the replacement text. Judging the
-  // replacement is the right scope for an Edit: the rest of the file was judged when it
-  // was written, and re-judging it would block an unrelated edit to a file that already
-  // (legitimately) contains a fixture.
-  const content = toolName === 'Write'
-    ? (input.tool_input?.content ?? '')
-    : (input.tool_input?.new_string ?? '');
+  // Write and NotebookEdit carry the text they put on disk, so that text is judged whole. An
+  // Edit is judged in the context of the file it lands in (see evaluateEditSecrets).
+  const ti = input.tool_input ?? {};
+  const secrets = target.tool === 'Edit'
+    ? evaluateEditSecrets(
+        readForEdit(target.filePath),
+        str(ti.old_string),
+        target.written,
+        ti.replace_all === true,
+      )
+    : evaluateWriteSecrets(target.written);
   // A credential outranks the cache gate. Both block, so the choice is only about WHICH
-  // message the operator reads — and being told "edit the source repo instead" while a
-  // live key sits in the payload would move that key into the source repo, which is the
-  // worse of the two outcomes. Security first, exactly as the header requires.
-  const decision = evaluateWriteSecrets(content);
-  if (decision) block(decision.message);
+  // message is read, and "edit the source repo instead" while a live key sits in the
+  // payload would move that key into the source repo.
+  if (secrets) block(secrets.message);
 
-  // The plugin-cache gate judges the PATH, so it must sit ABOVE the `if (!content)` early
-  // return below — and the ordering is load-bearing in the same way the advisory's is at
-  // the bottom of this function. An Edit whose new_string is the empty string (a pure
-  // deletion) carries nothing to judge, but it still targets a file the next
-  // `claude plugin update` will overwrite, and returning early would let it through.
-  const cacheBlock = evaluatePluginCacheWrite(filePath, content);
+  // Judge the path as given and, when different, the path with symlinks resolved.
+  const cacheBlock =
+    evaluatePluginCacheWrite(target.filePath, target.written) ??
+    evaluatePluginCacheWrite(resolveThroughSymlinks(target.filePath) ?? '', target.written);
   if (cacheBlock !== null) block(cacheBlock);
-
-  if (!content) allow();
-
-  // Advisory output goes LAST, after every block() above.
-  const shebang = evaluateShebang(filePath, content);
-  if (shebang !== null) warn(shebang);
 
   allow();
 }

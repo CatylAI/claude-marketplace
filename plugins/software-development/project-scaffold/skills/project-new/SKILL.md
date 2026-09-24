@@ -1,345 +1,281 @@
 ---
 name: project-new
-license: MIT
-description: Scaffold a complete project skeleton into an empty directory — a CLAUDE.md hierarchy, a Makefile whose targets match the stack, a pre-commit config, a README, a .gitignore, and an initial commit on a local branch. Asks the project type (Python, TypeScript, Terraform, or a combination) and writes real runnable files rather than placeholders. Creates nothing remote — no repository, no push, no branch protection, no pull request. Use when the directory is empty and you want the whole local skeleton in one pass. Not for a repository that already has code, which is project-init, and not for a time-boxed experiment, which is poc-start.
-when_to_use: start a new project from scratch, scaffold an empty directory, create a project skeleton, set up a Makefile and pre-commit, new repo local files, initial commit for a new project
-user-invocable: true
-allowed-tools: Read, Write, Bash(pwd:*), Bash(ls:*), Bash(find:*), Bash(mkdir:*), Bash(git:*), Bash(make:*), Bash(pre-commit:*), AskUserQuestion
+description: "Scaffolds an empty directory into a runnable local project with a Makefile, pre-commit, CLAUDE.md and first commit. Use when starting a Python, TypeScript or Terraform project from nothing. Not for existing code (use /init, then claude-craft:config-audit); not for an experiment (use poc-start)."
+when_to_use: "start a new project, scaffold an empty directory, new repo from scratch, project skeleton, bootstrap a new service"
 argument-hint: "[project-name]"
-context: fork
+allowed-tools: Read, Glob, Edit(./**), Bash(pwd), Bash(git init *), Bash(git init), Bash(git add *), Bash(git commit *), Bash(git status *), Bash(git branch --show-current), Bash(uv init *), Bash(uv add *), Bash(npm init *), Bash(npm install *), Bash(make *), Bash(pre-commit *), AskUserQuestion
+license: MIT
 ---
 
 # Scaffold a New Project Locally
 
-Turns an empty directory into a working project skeleton: documentation, a task runner,
-quality hooks, ignore rules, and one commit that contains all of it.
+Turns an empty directory into a project where `make verify` passes and one commit holds it
+all. Everything stays local: no remote, no push, no branch protection, no pull request. Forge
+work belongs to `github-workflow` or `gitlab-workflow`.
 
-Everything this skill does happens on the local filesystem. It does not create a remote
-repository, add a remote, push, protect a branch, or open a pull or merge request. Those
-are forge operations and they live in a forge plugin.
+Project name from the invocation: `$ARGUMENTS` (empty → default to the directory name).
 
-## Step 1 — Establish the starting state
+**Toolchain stance.** Python uses `uv`; TypeScript uses `npm`. These are the only managers this
+skill scaffolds, so the commands below are exact. If the user wants another (Poetry, pnpm, …),
+say that this skill writes uv/npm and let them choose to proceed or scaffold by hand.
 
-Read the directory before writing anything:
+**Without a checkout (web/Cowork):** this skill needs a shell and a filesystem. There, draft the
+files in chat for the user to create, and say that nothing was run or committed.
 
-```bash
-pwd
-ls -A 2>/dev/null | head -20
-ls -A 2>/dev/null | wc -l | tr -d ' '
-find . -maxdepth 1 -name .git -type d
-```
+## Step 1 — Check the directory is empty
 
-Classify what you found:
+Run `pwd`, then Glob `**/*` (every file at any depth, dotfiles included) and Glob `.git/HEAD`.
+Glob returns files, not directories, so judge by the files it lists.
 
-- **Empty, or only `.git` and stray dotfiles** — proceed.
-- **Has real files** — stop and ask before continuing. A directory with source in it is
-  `project-init`'s case (generate CLAUDE.md files against code that already exists), not
-  this one. Offer `AskUserQuestion` with two options: continue anyway and risk overwriting,
-  or abort and run `project-init` instead. Default to aborting. Never overwrite silently.
-
-If `.git` is already present, keep it. Re-initializing a repository that already has history
-is not something to do on the user's behalf.
+- **No files outside `.git/`, or only stray dotfiles such as `.DS_Store`** → continue. Note
+  whether `.git/HEAD` was found: that means a repository already exists.
+- **Has real files** → stop. This skill writes a Makefile, README and `.gitignore` and would
+  overwrite someone's work. Point the user to `/init` (generates CLAUDE.md from existing code)
+  and `claude-craft:config-audit` (audits existing Claude config), and end.
 
 ## Step 2 — Ask what is being built
 
-Use `AskUserQuestion`. Three things have to be settled before any file is written, and none
-of them can be guessed safely.
+One `AskUserQuestion` call with three questions, the defaults shown in the text:
 
-**Project type.** Offer:
+1. **Type:** Python service or library / TypeScript application / Terraform only / application
+   plus Terraform (then ask Python or TypeScript).
+2. **Name:** the argument or directory name. Repository and npm name in kebab-case; Python
+   import name in snake_case.
+3. **Local runtime:** none / a container compose file under `infrastructure/local/`.
 
-- Python service or library
-- TypeScript / JavaScript application
-- Infrastructure only (Terraform)
-- A combination — application code plus infrastructure
+Write nothing until all three are answered.
 
-**Project name.** Default to the directory name, shown in the question text so the user can
-correct it. It becomes the package or module name, so hold it to what the ecosystem allows:
-kebab-case for the repository and the npm package, snake_case for the Python import name.
+## Step 3 — Create the manifest and a smoke test
 
-**Infrastructure approach.** Offer:
+The manifest is what makes `make install` and `make test` real. The smoke test exists only so
+the test runner has something to collect (pytest and vitest both fail on zero tests); it is not
+application code, so write nothing beyond it.
 
-- Terraform only
-- Terraform plus a local runtime definition (a container compose file)
-- None — source code only
-
-Every later step reads these three answers. Do not start writing files until all three are
-settled.
-
-## Step 3 — Create the directory skeleton
-
-Only directories the chosen shape actually needs. An empty directory nobody uses is noise in
-every future listing.
-
-Python service:
+**Python:**
 
 ```bash
-mkdir -p src/<package_name> tests
+uv init --lib --vcs none --no-readme --name <name>
+uv add --dev pytest ruff mypy
 ```
 
-TypeScript application:
+`uv init --lib` writes `pyproject.toml` and `src/<package>/__init__.py`; `--vcs none` stops it
+creating a repository (Step 8 owns git). Then write `tests/test_smoke.py`:
+
+```python
+import <package>
+
+
+def test_package_imports() -> None:
+    assert <package>.__name__ == "<package>"
+```
+
+**TypeScript:**
 
 ```bash
-mkdir -p src tests
+npm init -y
+npm install --save-dev typescript vitest prettier @types/node
 ```
 
-Infrastructure, when Terraform was chosen:
+Set `"name"`, `"type": "module"` and these scripts in `package.json`:
+`"build": "tsc -p tsconfig.build.json"`, `"typecheck": "tsc --noEmit"`, `"test": "vitest run"`,
+`"lint": "prettier --check src tests"`, `"format": "prettier --write src tests"`. Prettier is
+scoped to source because pre-commit's `pretty-format-json` owns JSON layout and the two disagree
+on short arrays; checking `.` also fails on the pre-commit config itself.
 
-```bash
-mkdir -p infrastructure/terraform/modules infrastructure/terraform/environments
+Write two plain-JSON configs (no comments, so pre-commit's `check-json` accepts them):
+
+- `tsconfig.json`, for typechecking source and tests: `strict: true`, `module` and
+  `moduleResolution` `"NodeNext"`, `noEmit: true`, `include: ["src", "tests"]`.
+- `tsconfig.build.json`, for the build: `"extends": "./tsconfig.json"`, `noEmit: false`,
+  `rootDir: "src"`, `outDir: "dist"`, `include: ["src"]`.
+
+Then an empty `src/index.ts` export (`export {};`) and `tests/smoke.test.ts`:
+
+```ts
+import { expect, test } from "vitest";
+
+test("toolchain runs", () => {
+  expect(true).toBe(true);
+});
 ```
 
-Add `infrastructure/local/` only if the user asked for a local runtime definition. Do not
-create a `docs/` tree here — `adr-init` creates `docs/adr/` when the user is ready for it.
+**Terraform:** `infrastructure/terraform/versions.tf` containing an empty `terraform {}` block
+(so `validate` has a root module), and an empty `infrastructure/terraform/environments/dev.tfvars`.
+Environment `.tfvars` files are tracked and hold no secrets.
 
-## Step 4 — Write the CLAUDE.md hierarchy
+## Step 4 — Write the Makefile
 
-The templates ship with this plugin at `${CLAUDE_PLUGIN_ROOT}/templates/claude-md/`:
+Recipe lines are indented with a tab. Target names are the same across stacks; `verify` is the
+one command that must pass before a change is done, and what CI should run later.
 
-| Template | Written to | When |
-| --- | --- | --- |
-| `root.md` | `./CLAUDE.md` | Always |
-| `src.md` | `src/CLAUDE.md` | Any type other than infrastructure-only |
-| `infra.md` | `infrastructure/CLAUDE.md` | Terraform was chosen |
-
-Read each template and substitute every `${PLACEHOLDER}` from the Step 2 answers and the
-commands you are about to put in the Makefile. The two must agree — a CLAUDE.md that names
-a `make test` target the Makefile does not define is worse than no CLAUDE.md, because it
-will be run.
-
-Anything you genuinely cannot fill stays visible as `TODO: confirm <what>`. Never invent a
-plausible-looking value to make the file look finished.
-
-## Step 5 — Write the Makefile
-
-The Makefile is the project's public interface: one place that states how to install, test,
-check, and ship. Keep the target names identical across projects so muscle memory carries
-over, and let the bodies differ by stack.
-
-Recipe lines must be indented with a **tab**, not spaces. This is the single most common way
-a generated Makefile fails on first use.
-
-Python, using `uv` and the Astral toolchain:
+Python:
 
 ```makefile
 .PHONY: install test lint format typecheck verify
-
 install:
 	uv sync
-
 test:
 	uv run pytest
-
 lint:
 	uv run ruff check .
-
 format:
 	uv run ruff format .
-
 typecheck:
-	uv run mypy .
-
+	uv run mypy src tests
 verify: lint typecheck test
 ```
 
-TypeScript, using the package manager whose lock file you created:
+TypeScript:
 
 ```makefile
-.PHONY: install build test lint typecheck verify
-
+.PHONY: install build test lint format typecheck verify
 install:
 	npm ci
-
 build:
 	npm run build
-
 test:
 	npm test
-
 lint:
 	npm run lint
-
+format:
+	npm run format
 typecheck:
 	npm run typecheck
-
 verify: lint typecheck test build
 ```
 
-When Terraform is in the picture, add per-environment plan and apply targets rather than one
-target that takes the environment as a variable — an explicit `plan-dev` is harder to point
-at production by accident than `plan ENV=dev` with a wrong default:
+Terraform, with one explicit target per environment so a wrong default cannot point at
+production:
 
 ```makefile
-.PHONY: fmt validate plan-dev apply-dev
-
+TF := terraform -chdir=infrastructure/terraform
+.PHONY: install fmt validate verify plan-dev apply-dev
+install:
+	$(TF) init -backend=false -input=false
 fmt:
-	terraform -chdir=infrastructure/terraform fmt -recursive
-
+	$(TF) fmt -check -recursive
 validate:
-	terraform -chdir=infrastructure/terraform validate
-
+	$(TF) init -backend=false -input=false
+	$(TF) validate
+verify: fmt validate
 plan-dev:
-	terraform -chdir=infrastructure/terraform plan -var-file=environments/dev.tfvars
-
+	$(TF) plan -var-file=environments/dev.tfvars
 apply-dev:
-	terraform -chdir=infrastructure/terraform apply -var-file=environments/dev.tfvars
+	$(TF) apply -var-file=environments/dev.tfvars
 ```
 
-`verify` is the contract: one command that has to pass before a change is considered done.
-For a combined project, make `verify` depend on the application checks and the infrastructure
-`fmt` and `validate` targets both.
+Combined projects keep the application Makefile and add to it: the `TF :=` line, the `fmt`,
+`validate`, `plan-dev` and `apply-dev` targets (and their `.PHONY` names), and `fmt validate` at
+the end of `verify`'s prerequisites. The application's `install` stays; `validate` runs its own
+`init`.
 
-## Step 6 — Write the pre-commit configuration
+## Step 5 — Write CLAUDE.md and rules
 
-`.pre-commit-config.yaml` catches the cheap mistakes before they reach history. Start with
-the hygiene hooks every project wants, then add the stack's own.
+Read `${CLAUDE_PLUGIN_ROOT}/templates/claude-md/root.md`, fill every `${…}` from the answers and
+the Makefile, and write `./CLAUDE.md`. In the Commands block, list only targets the Makefile
+defines: Terraform-only has no `test` or `lint`, so list `install`, `fmt`, `validate`,
+`plan-dev` and `verify` instead. `${ADR_SECTION}`: delete it and the comment under it (a new
+project has no `docs/adr/`; `adr-init` adds that section later). Anything you cannot fill stays
+as `TODO: confirm <what>`.
 
-Pin each `rev` to a real released tag — look up the current one rather than reusing a version
-from memory, and never point a `rev` at a moving branch. An unpinned hook means the checks
-that run today are not the checks that run tomorrow.
+If Terraform was chosen, fill `${CLAUDE_PLUGIN_ROOT}/templates/claude-md/infra.md` and write it
+to `.claude/rules/infrastructure.md`. Its `paths:` frontmatter loads it only when Claude works on
+infrastructure files. Writes under `.claude/` always prompt for approval; that is expected.
 
-Hygiene, for every project — from `pre-commit/pre-commit-hooks`:
+## Step 6 — Write the README and .gitignore
 
-- `trailing-whitespace` and `end-of-file-fixer`
-- `check-yaml` and `check-json`
-- `check-added-large-files`
-- `check-merge-conflict`
-- `detect-private-key`
-
-Python — from `astral-sh/ruff-pre-commit`, the `ruff` hook with `args: [--fix]` and the
-`ruff-format` hook. Add `mypy` from `pre-commit/mirrors-mypy` if the project is typed, and
-list its runtime stubs under `additional_dependencies` — without them it type-checks against
-an empty environment and reports nonsense.
-
-TypeScript — `prettier` over JavaScript, TypeScript, JSON, YAML, and Markdown, and `eslint`
-restricted to source files. Prefer the repository's own `npm run lint` through a `local` hook
-when the project already has an ESLint configuration; two sources of lint truth disagree
-eventually.
-
-Terraform — from `antonbabenko/pre-commit-terraform`, `terraform_fmt` and
-`terraform_validate`. Add `terraform_tflint` only if the project has a `.tflint.hcl`; a hook
-with no configuration fails on first run and gets disabled, which costs more than it saved.
-
-Secrets scanning belongs here too if the project will ever hold credentials-adjacent
-configuration. Say so in the report rather than adding a scanner the user did not ask for.
-
-## Step 7 — Write the README
-
-The README is for a human arriving cold. It is not the CLAUDE.md, and it should not repeat
-it. Keep it to: what this is in one or two sentences, how to install and run it, how to run
-the checks, and where the conventions live.
+README, for a human arriving cold:
 
 ```markdown
-# <project-name>
+# <name>
 
-<one-sentence description — TODO: confirm>
+TODO: confirm a one-sentence description.
 
 ## Quick start
 
     make install
     make verify
 
-## Development
-
-Conventions and commands for this project live in [CLAUDE.md](./CLAUDE.md).
-Infrastructure conventions live in `infrastructure/CLAUDE.md`.
-
-## Contributing
-
-Branch from the default branch, make the change, and run `make verify` before
-proposing it. The check that gates a change is the same one CI runs.
+Conventions for contributors and Claude live in [CLAUDE.md](./CLAUDE.md).
 ```
 
-Leave the description as an explicit TODO rather than generating marketing prose about a
-project that does not exist yet.
+`.gitignore`, grouped with a comment per group, environment group first:
 
-## Step 8 — Write the .gitignore
+- **Environment and personal:** `.env`, `.env.*`, `CLAUDE.local.md`, `.claude/settings.local.json`.
+- **Python:** `__pycache__/`, `*.py[cod]`, `.venv/`, `.mypy_cache/`, `.pytest_cache/`,
+  `.ruff_cache/`, `dist/`, `*.egg-info/`.
+- **Node:** `node_modules/`, `dist/`, `coverage/`.
+- **Terraform:** `.terraform/`, `*.tfstate`, `*.tfstate.*`, `crash.log`. Keep
+  `.terraform.lock.hcl` tracked: it pins provider hashes.
+- **Editor and OS:** `.idea/`, `.vscode/`, `.DS_Store`.
 
-Cover the ecosystems actually chosen, plus the two categories every project needs:
-environment files and editor state. Grouped and commented, so the next person can tell which
-lines are load-bearing:
+Lock files (`uv.lock`, `package-lock.json`) stay tracked; they make `make install` reproducible.
 
-- **Environment** — `.env`, `.env.*`, and any local secrets file the stack uses. First
-  group in the file, because it is the one whose absence causes real damage.
-- **Python** — `__pycache__/`, `*.py[cod]`, `.venv/`, `.mypy_cache/`, `.pytest_cache/`,
-  `.ruff_cache/`, `*.egg-info/`, `dist/`, `build/`.
-- **Node** — `node_modules/`, build output for the chosen framework, `.turbo/`, coverage
-  output.
-- **Terraform** — `.terraform/`, `*.tfstate`, `*.tfstate.*`, `crash.log`, and `*.tfvars`
-  files that hold environment-specific values you do not want committed. Keep
-  `.terraform.lock.hcl` **tracked** — it pins provider hashes, and ignoring it is a
-  reproducibility bug, not a tidiness win.
-- **Editor and OS** — `.idea/`, `.vscode/`, `.DS_Store`, swap files.
+## Step 7 — Add pre-commit
 
-Do not ignore lock files. A committed lock file is what makes `make install` mean the same
-thing on two machines.
+Load `dev-standards:precommit-standards` with the Skill tool and follow its "The baseline
+template" section: it owns the baseline `.pre-commit-config.yaml` (shipped in the dev-standards
+plugin), the pinning rules and the stack sections. Enable the sections for the chosen stack only.
+If that skill is not installed, write no config and list "add pre-commit" as a next step.
 
-## Step 9 — Make the first commit
+Adjust the baseline to this skeleton, leaving a one-line reason in a comment each time:
 
-```bash
-git init
-git add .
-git commit -m "chore: scaffold project skeleton"
-```
+- **Python:** enable the `[PYTHON]` section as shipped.
+- **TypeScript:** leave `[NODEJS]` commented out; its hooks call eslint and jest, which this
+  skeleton does not install. Add one pre-push hook that runs the project's own contract:
 
-Three things to get right:
-
-- If `git init` created the repository, check what it named the default branch and tell the
-  user in the report. Do not rename it — that is a project convention, not this skill's call.
-- Install the hooks so the config written in Step 6 is actually live:
-
-  ```bash
-  pre-commit install
+  ```yaml
+  - repo: local
+    hooks:
+      - id: make-verify
+        name: make verify (pre-push)
+        entry: make verify
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
   ```
 
-  If `pre-commit` is not on PATH, say so in the report and give the install command rather
-  than silently skipping. A `.pre-commit-config.yaml` with no installed hook is decoration.
-- Use a Conventional Commits subject. The scaffold commit is the first line of the project's
-  history and it sets the pattern everyone else copies.
+- **Terraform:** enable `[TERRAFORM]`, but comment out `terraform_docs` unless the
+  `terraform-docs` binary is on PATH; without it the hook fails every run.
 
-Stop here. Do not add a remote, do not push, do not create a repository anywhere.
+## Step 8 — Initialise git, run the hooks, commit
 
-## Step 10 — Verify what was written
-
-Check the artifacts rather than trusting that the writes landed:
+Run `git init` only if Step 1 found no `.git/HEAD`; an existing repository is kept as is. Then:
 
 ```bash
-git log --oneline -1
-make -n verify >/dev/null 2>&1 && echo "verify target resolves" || echo "verify target BROKEN"
+pre-commit install
+git add -A
 pre-commit run --all-files
 ```
 
-`make -n verify` is the one that catches the tab-versus-spaces mistake and any target the
-CLAUDE.md promised but the Makefile does not define. The first `pre-commit run` usually
-reformats files — that is expected; commit the result with an `amend` or a follow-up
-`style:` commit, and say which you did.
+The first run usually reformats files. Stage the fixes (`git add -A`) and re-run until it
+passes, then commit:
 
-If anything fails, fix it and re-run. Do not report success over a broken target.
+```bash
+git commit -m "chore: scaffold project skeleton"
+git branch --show-current
+```
 
-## Step 11 — Report
+If `pre-commit` is not on PATH, commit without it and report the install command. Do not rename
+the default branch; report its name.
 
-List every file written with a one-line purpose, then:
+## Step 9 — Verify
 
-- every `TODO: confirm` left in the generated files, so the user knows what is unfinished;
-- whether pre-commit hooks were installed or skipped, and why;
-- the default branch name and the commit subject;
-- the next steps, in order:
-  1. Fill in the README description and the remaining CLAUDE.md TODOs.
-  2. Run `adr-init` once the first real architectural decisions exist, so they are recorded
-     while the reasoning is still fresh.
-  3. Create the remote repository yourself when you are ready. This plugin does not do it,
-     by design — forge work (remote creation, branch protection, CI workflows, pull request
-     lifecycle) belongs to the `github-workflow` plugin and to your own forge tooling.
-  4. Add CI once the remote exists. The `verify` target is what CI should run; a pipeline
-     that runs a different set of checks than the developer does is a pipeline that
-     disagrees with the developer.
+```bash
+make install
+make verify
+git status --short
+```
 
-## Notes
+`make verify` must pass and `git status` must be clean (Step 3 already created the lock file, so
+`make install` should change nothing). If a check fails, fix the file, re-run, and commit the fix
+as a follow-up `fix:` commit; report success only on a green `verify`.
 
-- The CLAUDE.md templates are yours to edit. This skill reads whatever is in
-  `${CLAUDE_PLUGIN_ROOT}/templates/claude-md/`, so house style changes there, not here.
-- Do not add a CI configuration file. Which CI system a project uses depends on where the
-  remote will live, and the remote does not exist yet.
-- Do not scaffold application code — no example endpoint, no placeholder component, no
-  sample module. The skeleton is the deliverable; the first real file is the author's.
-- If the user wanted a time-boxed experiment rather than a project, this is the wrong skill.
-  `poc-start` writes a contract with kill criteria and scaffolds deliberately less.
+## Step 10 — Report
+
+- Every file written, one line each.
+- Every `TODO: confirm` left.
+- Pre-commit: installed and passing, or skipped and why.
+- Default branch name and commit subjects.
+- Next steps: fill the TODOs; run `/project-scaffold:adr-init` once real decisions exist; create
+  the remote yourself (then `github-workflow` or `gitlab-workflow`); add CI that runs `make verify`.

@@ -60,6 +60,16 @@ export const TOKEN_PATTERNS: readonly SecretPattern[] = [
   { name: 'openai-project-key', re: new RegExp(LEFT_EDGE + String.raw`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}`, 'g') },
   { name: 'openai-api-key', re: new RegExp(LEFT_EDGE + String.raw`sk-[A-Za-z0-9]{48}`, 'g') },
   { name: 'google-api-key', re: new RegExp(LEFT_EDGE + String.raw`AIza[A-Za-z0-9_-]{35}`, 'g') },
+  { name: 'google-oauth-access-token', re: new RegExp(LEFT_EDGE + String.raw`ya29\.[A-Za-z0-9_-]{20,}`, 'g') },
+  // GitLab's other prefixed token types: CI job, trigger, feed, service-account OAuth,
+  // OAuth application secret, incoming mail, agent.
+  { name: 'gitlab-token', re: new RegExp(LEFT_EDGE + String.raw`gl(?:cbt|ptt|ft|soat|oas|imt|agent)-[A-Za-z0-9_-]{20,}`, 'g') },
+  { name: 'stripe-secret-key', re: new RegExp(LEFT_EDGE + String.raw`(?:sk|rk)_live_[A-Za-z0-9]{24,}`, 'g') },
+  { name: 'npm-token', re: new RegExp(LEFT_EDGE + String.raw`npm_[A-Za-z0-9]{36}`, 'g') },
+  { name: 'pypi-token', re: new RegExp(LEFT_EDGE + String.raw`pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}`, 'g') },
+  { name: 'huggingface-token', re: new RegExp(LEFT_EDGE + String.raw`hf_[A-Za-z0-9]{34,}`, 'g') },
+  { name: 'sendgrid-api-key', re: new RegExp(LEFT_EDGE + String.raw`SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`, 'g') },
+  { name: 'slack-webhook-url', re: new RegExp(String.raw`https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}`, 'g') },
   { name: 'private-key-block', re: new RegExp(PEM_BEGIN, 'g') },
 ];
 
@@ -106,8 +116,11 @@ export function containsPlaceholder(text: string): boolean {
  * file documenting a gate cannot be committed.
  */
 export function isObviousPlaceholder(match: string): boolean {
+  // A placeholder word counts only when written in ONE case: `example`, `EXAMPLE` or
+  // `Example`. A random token body spells `TeSt`, `tOdO` or `yOuR` now and then; a
+  // case-insensitive check silently exempted those real credentials.
+  if (PLACEHOLDER_WORDS.some((w) => spelledInOneCase(match, w))) return true;
   const lower = match.toLowerCase();
-  if (PLACEHOLDER_WORDS.some((w) => lower.includes(w))) return true;
   // AWS's own published example key id.
   if (lower.includes('akiaiosfodnn7')) return true;
   // A body of very low character variety is filler (xxxx…, 0000…, ababab…).
@@ -115,6 +128,11 @@ export function isObviousPlaceholder(match: string): boolean {
   const distinct = new Set(body.replace(/[^A-Za-z0-9]/g, '')).size;
   if (body.length >= 8 && distinct <= 4) return true;
   return false;
+}
+
+function spelledInOneCase(text: string, word: string): boolean {
+  const capitalized = word[0]!.toUpperCase() + word.slice(1);
+  return text.includes(word) || text.includes(word.toUpperCase()) || text.includes(capitalized);
 }
 
 export interface SecretMatch {

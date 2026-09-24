@@ -111,25 +111,39 @@ describe('the registry is data a reader can extend', () => {
 describe('post-mcp-tool.ts as Claude Code runs it', () => {
   const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'post-mcp-tool.ts');
 
-  function runHook(payload: unknown): { code: number; stderr: string } {
+  function runHook(payload: unknown): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       process.execPath,
       ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', HOOK],
       { input: JSON.stringify(payload), encoding: 'utf-8' },
     );
-    return { code: r.status ?? -1, stderr: r.stderr ?? '' };
+    return { code: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
   }
 
-  it('reads tool_response and always exits 0', () => {
-    // `tool_result` is the model-facing content-block name and is never a hook-input field.
-    // Reading it yields undefined forever while looking like it works, so this pins the
-    // field name as much as the exit code.
+  it('reads the PostToolUseFailure `error` string and answers through additionalContext', () => {
+    // An MCP error result fires PostToolUseFailure, not PostToolUse, and stderr on exit 0
+    // never reaches Claude. Both halves are pinned here.
     const r = runHook({
+      hook_event_name: 'PostToolUseFailure',
+      tool_name: 'mcp__gitlab__create_merge_request',
+      error: '401 Unauthorized',
+    });
+    assert.equal(r.code, 0, 'this hook must never block');
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.hookSpecificOutput.hookEventName, 'PostToolUseFailure');
+    assert.match(out.hookSpecificOutput.additionalContext, /MCP AUTH/);
+    assert.equal(r.stderr, '');
+  });
+
+  it('still reads tool_response when an auth failure arrives in a successful result', () => {
+    // `tool_result` is the model-facing content-block name and is never a hook-input field.
+    const r = runHook({
+      hook_event_name: 'PostToolUse',
       tool_name: 'mcp__gitlab__create_merge_request',
       tool_response: { error: '401 Unauthorized' },
     });
-    assert.equal(r.code, 0, 'a PostToolUse hook must never block');
-    assert.match(r.stderr, /MCP AUTH/);
+    assert.equal(r.code, 0);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.hookEventName, 'PostToolUse');
   });
 
   it('says nothing on a successful call', () => {
@@ -138,6 +152,7 @@ describe('post-mcp-tool.ts as Claude Code runs it', () => {
       tool_response: { web_url: 'https://example.com/mr/1' },
     });
     assert.equal(r.code, 0);
+    assert.equal(r.stdout, '');
     assert.equal(r.stderr, '');
   });
 

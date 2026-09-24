@@ -1,7 +1,7 @@
 {
   "name": "terraform-aws",
-  "version": "0.1.0",
-  "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC federation from CI, zero-downtime database migrations, and the judgement half of an IaC review.",
+  "version": "0.2.0",
+  "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC trust for GitHub and GitLab CI, and the judgement half of a Terraform plan review.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"
@@ -11,8 +11,7 @@
     "terraform",
     "aws",
     "iam",
-    "infrastructure",
-    "migrations"
+    "infrastructure"
   ],
   "dependencies": [
     "dev-standards"

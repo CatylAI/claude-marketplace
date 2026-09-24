@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "snowflake": {
+      "type": "http",
+      "url": "${user_config.snowflake_mcp_url}",
+      "headers": {
+        "Authorization": "Bearer ${user_config.snowflake_pat}"
+      }
+    }
+  }
+}

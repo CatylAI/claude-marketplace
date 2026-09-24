@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluateShebang, evaluateWriteSecrets } from './pre-write-edit.ts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import {
+  applyEdit,
+  evaluateEditSecrets,
+  evaluateWriteSecrets,
+  extractWriteTarget,
+} from './pre-write-edit.ts';
 
 // Assembled at runtime so this test file never contains a contiguous token-shaped literal
 // — which would make the file unwritable by the very gate it tests.
@@ -57,15 +64,44 @@ describe('evaluateWriteSecrets', () => {
   });
 });
 
-describe('evaluateShebang', () => {
-  it('warns on a hardcoded interpreter path in a .sh file', () => {
-    assert.ok(evaluateShebang('build.sh', '#!/bin/bash\nset -e\n'));
-    assert.ok(evaluateShebang('build.sh', '#!/usr/bin/bash\n'));
+describe('evaluateEditSecrets: an Edit is judged in the file it lands in', () => {
+  // The realistic miss this pins: the assignment shape lives in the UNCHANGED text, so the
+  // replacement alone (a bare string literal) matches no CONTENT_PATTERN.
+  const BEFORE = 'db = connect(\n  password = os.environ["DB_PASSWORD"],\n)\n';
+
+  it('blocks a literal that completes an assignment already in the file', () => {
+    const d = evaluateEditSecrets(BEFORE, 'os.environ["DB_PASSWORD"]', '"s3rv1ceAcct99"', false);
+    assert.ok(d, 'the password literal must be caught in context');
+    assert.equal(d.patternName, 'hardcoded-password');
   });
-  it('says nothing for the portable form, or for a non-.sh file', () => {
-    assert.equal(evaluateShebang('build.sh', '#!/usr/bin/env bash\n'), null);
-    assert.equal(evaluateShebang('build.sh', '#!/usr/bin/env zsh\n'), null);
-    assert.equal(evaluateShebang('notes.md', '#!/bin/bash\n'), null);
+
+  it('does not re-judge a credential-shaped value the file already had', () => {
+    const before = 'password = "s3rv1ceAcct99"\nport = 1\n';
+    assert.equal(evaluateEditSecrets(before, 'port = 1', 'port = 2', false), null);
+  });
+
+  it('falls back to the replacement text when the file cannot be read', () => {
+    assert.ok(evaluateEditSecrets(null, 'x', `t = "${FAKE_GH_TOKEN}"`, false));
+    assert.equal(evaluateEditSecrets(null, 'x', '"s3rv1ceAcct99"', false), null);
+  });
+
+  it('applyEdit splices literally and honours replace_all', () => {
+    assert.equal(applyEdit('a b a', 'a', '$&', false), '$& b a');
+    assert.equal(applyEdit('a b a', 'a', 'c', true), 'c b c');
+    assert.equal(applyEdit('a b a', 'zz', 'c', false), null);
+  });
+});
+
+describe('extractWriteTarget', () => {
+  it('covers NotebookEdit through notebook_path and new_source', () => {
+    const t = extractWriteTarget({
+      tool_name: 'NotebookEdit',
+      tool_input: { notebook_path: '/p/n.ipynb', new_source: 'x = 1' },
+    });
+    assert.deepEqual(t, { tool: 'NotebookEdit', filePath: '/p/n.ipynb', written: 'x = 1' });
+  });
+  it('ignores tools that do not write files', () => {
+    assert.equal(extractWriteTarget({ tool_name: 'Read', tool_input: { file_path: '/p' } }), null);
   });
 });
 
@@ -121,13 +157,47 @@ describe('pre-write-edit.ts as Claude Code runs it', () => {
     assert.equal(r.code, 2, 'must BLOCK (2), not merely warn (1)');
   });
 
-  it('warns without blocking on the shebang alone', () => {
+  it('allows the shebang alone silently — exit 1 reached only the user, never Claude', () => {
+    // The portability note moved to post-write-edit, which reports via additionalContext.
     const r = runHook({
       tool_name: 'Write',
       tool_input: { file_path: 'deploy.sh', content: '#!/bin/bash\nset -euo pipefail\n' },
     });
-    assert.equal(r.code, 1);
-    assert.match(r.stderr, /SHEBANG/);
+    assert.equal(r.code, 0);
+    assert.equal(r.stderr, '');
+  });
+
+  it('blocks a token written into a notebook cell via NotebookEdit', () => {
+    const r = runHook({
+      tool_name: 'NotebookEdit',
+      tool_input: {
+        notebook_path: '/tmp/analysis.ipynb',
+        cell_id: 'abc',
+        new_source: `client = Client(token="${FAKE_GH_TOKEN}")`,
+      },
+    });
+    assert.equal(r.code, 2, r.stderr);
+    assert.match(r.stderr, /github-token/);
+  });
+
+  it('blocks an Edit whose literal completes a password assignment on disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pwe-'));
+    try {
+      const file = join(dir, 'settings.py');
+      writeFileSync(file, 'DB = dict(\n    password=os.environ["DB_PASSWORD"],\n)\n');
+      const r = runHook({
+        tool_name: 'Edit',
+        tool_input: {
+          file_path: file,
+          old_string: 'os.environ["DB_PASSWORD"]',
+          new_string: '"s3rv1ceAcct99"',
+        },
+      });
+      assert.equal(r.code, 2, r.stderr);
+      assert.match(r.stderr, /hardcoded-password/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('ignores a tool it does not govern', () => {

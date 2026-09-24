@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # prepare-context.sh — build the entire bounded input set for a detection-first code review, deterministically.
 #
-#   prepare-context.sh --base <ref> [--source <ref>] [--out .code-review] [--effort low|medium|high]
+#   prepare-context.sh [--base <ref>] [--source <ref>] [--out .code-review] [--effort low|medium|high]
 #
 # Runs the zero-token detection pass (review-scan.sh) and then assembles everything the semantic
 # agent is allowed to read, with a hard cap on every input:
@@ -15,8 +15,10 @@
 # here is a shell condition whose decision is recorded in CONTEXT.json with a reason. A caller can
 # diff two runs and see exactly why the architect was or was not spawned.
 #
-# Exit status: 0 when the context was built (whatever the scan found), 2 when it could not be built
-# at all (bad ref, not a git repo, bad flag). The review is a separate concern from the context.
+# EXIT STATUS
+#   0  the context was built, whatever the scan found (a failed scan is recorded, not fatal).
+#   2  it could not be built at all: bad flag, bad ref, not a git repo, unsafe --out, or the Python
+#      assembly step failed. The message on stderr says which.
 #
 # Portable bash 3.2+ / zsh. Depends on git and python3 only.
 
@@ -25,6 +27,11 @@ set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCANNER="$SELF_DIR/review-scan.sh"
 
+# The two DIFF.md budgets. They are reading budgets, not measured thresholds: DIFF.md is the
+# largest thing the semantic agent reads, so these set how much of its context the diff may take.
+# With the 60-line per-file floor below, 1500 lines gives about 25 source files a full share; files past
+# that get the MIN_SLICE minimum. Every omission and truncation is recorded in CONTEXT.json, so the
+# reviewer sees what was cut. Tune with --max-diff-lines / --max-diff-files.
 BASE="" SOURCE="HEAD" OUT=".code-review" EFFORT="medium"
 MAX_DIFF_LINES=1500 MAX_DIFF_FILES=40 SKIP_SCAN=false QUIET=false
 
@@ -33,8 +40,9 @@ say() { $QUIET || printf '%s\n' "$*" >&2; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: prepare-context.sh --base <ref> [options]
-  --base <ref>          required; merge base (origin/main, or a CI-supplied base SHA)
+usage: prepare-context.sh [options]
+  --base <ref>          merge base. Default: origin/HEAD, then origin/main, then origin/master.
+                        An explicit ref must resolve; it is never substituted.
   --source <ref>        default HEAD
   --out <dir>           default .code-review
   --effort low|medium|high   default medium; low never spawns the architect, high always does
@@ -46,14 +54,19 @@ EOF
   exit 2
 }
 
+# Sourced BEFORE argument parsing, because the parser uses need_value from it. The --out guard lives
+# here too, SOURCED rather than restated, so the two entry points cannot drift on it. A missing lib is
+# a hard failure, never a silently-skipped guard.
+. "$SELF_DIR/_lib.sh" || die "cannot source $SELF_DIR/_lib.sh — the --out safety guard is unavailable"
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --base) BASE="${2:-}"; shift 2 ;;
-    --source) SOURCE="${2:-}"; shift 2 ;;
-    --out) OUT="${2:-}"; shift 2 ;;
-    --effort) EFFORT="${2:-}"; shift 2 ;;
-    --max-diff-lines) MAX_DIFF_LINES="${2:-}"; shift 2 ;;
-    --max-diff-files) MAX_DIFF_FILES="${2:-}"; shift 2 ;;
+    --base) need_value "$1" $# "${2-}"; BASE="$2"; shift 2 ;;
+    --source) need_value "$1" $# "${2-}"; SOURCE="$2"; shift 2 ;;
+    --out) need_value "$1" $# "${2-}"; OUT="$2"; shift 2 ;;
+    --effort) need_value "$1" $# "${2-}"; EFFORT="$2"; shift 2 ;;
+    --max-diff-lines) need_value "$1" $# "${2-}"; MAX_DIFF_LINES="$2"; shift 2 ;;
+    --max-diff-files) need_value "$1" $# "${2-}"; MAX_DIFF_FILES="$2"; shift 2 ;;
     --skip-scan) SKIP_SCAN=true; shift ;;
     --quiet) QUIET=true; shift ;;
     -h|--help) usage ;;
@@ -61,21 +74,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$BASE" ] || usage
 case "$EFFORT" in low|medium|high) ;; *) die "invalid --effort '$EFFORT' (low|medium|high)" ;; esac
+case "$MAX_DIFF_LINES" in ''|*[!0-9]*|0) die "--max-diff-lines must be a positive integer, got '$MAX_DIFF_LINES'" ;; esac
+case "$MAX_DIFF_FILES" in ''|*[!0-9]*|0) die "--max-diff-files must be a positive integer, got '$MAX_DIFF_FILES'" ;; esac
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
 command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
-git rev-parse --verify --quiet "$BASE" >/dev/null || die "base ref '$BASE' does not resolve"
-git rev-parse --verify --quiet "$SOURCE" >/dev/null || die "source ref '$SOURCE' does not resolve"
+BASE="$(resolve_base "$BASE")" || die "cannot choose a base ref (see above)"
+git rev-parse --verify --quiet "$SOURCE^{commit}" >/dev/null || die "source ref '$SOURCE' does not resolve"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || die "could not cd to repo root $REPO_ROOT"
 
-# The --out guard is SOURCED, not restated. It was duplicated verbatim across this script and its
-# sibling — comment and all — in a change whose thesis is that a restated invariant drifts. A missing
-# lib is a hard failure, never a silently-skipped guard.
-. "$SELF_DIR/_lib.sh" || die "cannot source $SELF_DIR/_lib.sh — the --out safety guard is unavailable"
 require_safe_out "$OUT" || die "--out is unsafe (see above); refusing to write a '*' fence"
 mkdir -p "$OUT" || die "could not create $OUT"
 # Fence the artifact directory at creation. Whether review artifacts stay out of history must not
@@ -87,6 +97,16 @@ mkdir -p "$OUT" || die "could not create $OUT"
 # deliberately customised the file keeps it. Escape hatch: delete "$OUT/.gitignore" and the artifacts
 # become committable again.
 [ -e "$OUT/.gitignore" ] || printf '*\n' > "$OUT/.gitignore"
+
+# Remove the previous review's agent and validator artifacts before anything else runs. They are all
+# written later in THIS review, and a leftover one is read as current: a stale VALIDATOR-DECISIONS.json
+# was applied to the new findings, and a stale TESTING.json satisfied a gate whose agent never ran.
+# SCAN.json is not in the list; review-scan.sh rewrites it, and --skip-scan relies on keeping it.
+for _f in SEMANTIC.json TESTING.json ARCHITECTURE.json ARCHITECTURE.md CLAUDE_CONFIG.json \
+          VALIDATOR-DECISIONS.json VALIDATED.json VALIDATED.md CONTRACT-DEFECTS.md; do
+  rm -f "$OUT/$_f"
+done
+unset _f
 
 REVIEWED_SHA="$(git rev-parse "$SOURCE")"
 # The semantic agent has no Bash and reads repository files off the WORKING TREE, so every prompt on
@@ -127,14 +147,27 @@ fi
 
 # ---------------------------------------------------------------------------- changed files
 CHANGED="$OUT/.changed"
-git diff --name-only --diff-filter=ACMR "$BASE...$SOURCE" > "$CHANGED.all" \
+DELETED="$OUT/.deleted"
+# The scratch lists go on EVERY exit, including a `die` part-way through; an rm at the end of the
+# script left them behind whenever the context step failed.
+trap 'rm -f "$CHANGED" "$CHANGED.all" "$CHANGED.unlisted" "$DELETED" "$DELETED.all" "$DELETED.unlisted" 2>/dev/null' EXIT
+# NUL-safe and unquoted (see list_changed in _lib.sh): a non-ASCII name used to arrive C-quoted and
+# match nothing on disk.
+list_changed "$BASE...$SOURCE" "$CHANGED.all" "$CHANGED.unlisted" \
   || die "git diff $BASE...$SOURCE failed"
+# Deleted files, listed apart so their hunks still reach DIFF.md. Without them a change that deleted
+# a whole file showed the reviewer an empty diff.
+list_changed "$BASE...$SOURCE" "$DELETED.all" "$DELETED.unlisted" D \
+  || die "git diff $BASE...$SOURCE failed"
+cat "$DELETED.unlisted" >> "$CHANGED.unlisted"
+if [ -s "$CHANGED.unlisted" ]; then
+  say "prepare-context: warn — $(grep -c . "$CHANGED.unlisted") changed file(s) have a newline in the name and are left out of DIFF.md and CONTEXT.json"
+fi
 
-# Same exclusion list the review skill and review-scan.sh apply, so all three paths agree on what
-# counts as generated. Diverging here would mean the scanner and the semantic agent disagree about
-# which files are even in the change.
-grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|\.terraform\.lock\.hcl|dist/|build/|node_modules/|__pycache__/|\.min\.js|\.min\.css|\.generated\.|\.pb\.go|\.snap$|vendor/)' \
-  < "$CHANGED.all" > "$CHANGED" || : > "$CHANGED"
+# The generated-file list lives in _lib.sh and is shared with review-scan.sh, so the scanner and the
+# semantic agent agree on which files are even in the change.
+drop_generated "$CHANGED.all" "$CHANGED"
+drop_generated "$DELETED.all" "$DELETED"
 
 # grep -c prints its own 0 and ALSO exits 1 on no match, so a `|| printf 0` fallback yields "0\n0"
 # and breaks the arithmetic. Default only when the variable came back empty.
@@ -144,7 +177,7 @@ say "prepare-context: $N_KEPT changed file(s) ($((N_ALL - N_KEPT)) generated/exc
 
 # ---------------------------------------------------------------------------- repo-authored guidance
 # `.claude-invariants.json` is the one pipeline input the author of the code under review also
-# writes, which is why AGENT-PROMPTS.md's third shared rule makes it ADDITIVE ONLY. The cap here is
+# writes, which is why the agents treat it as ADDITIVE ONLY (it can add checks, never waive them). The cap here is
 # the other half of that rule: an unbounded repo-authored file is an unbounded prompt-injection
 # surface, and it is billed at cache-write rates against an agent whose whole context budget is
 # 6-10k tokens.
@@ -155,9 +188,8 @@ say "prepare-context: $N_KEPT changed file(s) ($((N_ALL - N_KEPT)) generated/exc
 # indistinguishable from "this repo has no invariants file", and a reviewer who cannot tell those
 # apart cannot tell that a check they wrote was silently never applied.
 #
-# 8192 is `security-guidance/hooks/extensibility.py`'s `GUIDANCE_MAX_BYTES`, kept deliberately equal
-# so the two plugins agree on how much repo-authored guidance is reasonable. The MECHANISM diverges
-# (that hook truncates at the same number) for the reason above.
+# 8192 bytes is roughly 2,000 tokens: a deliberate ceiling on how much of an agent's budget
+# repo-authored text may claim, and still room for a few dozen one-line invariants.
 INVARIANTS_MAX_BYTES=8192
 INVARIANTS=""
 INVARIANTS_REASON="absent: no .claude-invariants.json in the repository root"
@@ -179,12 +211,12 @@ fi
 python3 - \
   "$CHANGED" "$OUT" "$BASE" "$SOURCE" "$SOURCE_BRANCH" "$TARGET_BRANCH" "$REVIEWED_SHA" \
   "$EFFORT" "$MAX_DIFF_LINES" "$MAX_DIFF_FILES" "$N_ALL" "$N_KEPT" "$INVARIANTS" \
-  "$INVARIANTS_REASON" "$WORKTREE_SHA" "$SELF_DIR" <<'PY'
+  "$INVARIANTS_REASON" "$WORKTREE_SHA" "$SELF_DIR" "$DELETED" <<'PY'
 import json, os, re, subprocess, sys
 
 (changed_path, out_dir, base, source, source_branch, target_branch, reviewed_sha,
  effort, max_lines, max_files, n_all, n_kept, invariants, invariants_reason,
- worktree_sha, self_dir) = sys.argv[1:17]
+ worktree_sha, self_dir, deleted_path) = sys.argv[1:18]
 max_lines, max_files = int(max_lines), int(max_files)
 
 # ONE definition of "is this a test path", in pipeline/testpaths.py. There were two here, 188 lines
@@ -202,6 +234,10 @@ except ImportError as exc:
 
 with open(changed_path) as fh:
     files = [ln.strip() for ln in fh if ln.strip()]
+# Deleted files are in the diff but in no gate: nothing was added to test, and there is no new file
+# to judge. They are listed separately in CONTEXT.json and their hunks go into DIFF.md.
+with open(deleted_path) as fh:
+    deleted = [ln.strip() for ln in fh if ln.strip()]
 
 # ----------------------------------------------------------------- stack signals
 # Same case arms as review-scan.sh's stack detection. Kept as suffix tuples rather than one
@@ -220,18 +256,23 @@ signals = {
 }
 
 # ----------------------------------------------------------------- diff assembly
-# ONE git invocation per 200 files rather than one per file: on a 40-file change that is 39 fewer
+# quotePath=false so `+++ b/<path>` carries the real name rather than a C-quoted one, and literal
+# pathspecs so a file named `[ab].py` is not read as a glob that also matches `a.py`.
+GIT = ["git", "-c", "core.quotePath=false", "--literal-pathspecs"]
+# ONE git invocation per 200 files (a batch size that stays far below ARG_MAX even for long paths)
+# rather than one per file: on a 40-file change that is 39 fewer
 # processes, and the per-file split below is exact because `diff --git` starts every file section.
 def run_diff(paths):
     if not paths:
         return ""
-    cmd = ["git", "diff", "-U3", "--no-color", f"{base}...{source}", "--"] + paths
+    cmd = GIT + ["diff", "-U3", "--no-color", f"{base}...{source}", "--"] + paths
     try:
         return subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
     except OSError:
         return ""
 
-raw = "".join(run_diff(files[i:i + 200]) for i in range(0, len(files), 200))
+diff_paths = files + deleted
+raw = "".join(run_diff(diff_paths[i:i + 200]) for i in range(0, len(diff_paths), 200))
 
 # Split on the `diff --git` header. `re.split` with a capturing group keeps the header itself, and
 # a leading empty element appears when the output starts with a header — drop it.
@@ -241,6 +282,8 @@ parts = re.split(r"(?m)^(?=diff --git )", raw)
 # through untouched: a 40-line file can still be a 4MB DIFF.md. Truncate the line's tail IN PLACE
 # (never drop the line) so line count and ordering, which downstream line anchors depend on, are
 # unaffected by this cap.
+# 1200 characters is about fifteen 80-column lines: long enough for any hand-written code line, short
+# enough that one minified line cannot cost more than a small file.
 LINE_BYTE_CAP = 1200
 
 def cap_line(line):
@@ -253,7 +296,9 @@ lines_byte_truncated = []
 for part in parts:
     if not part.startswith("diff --git "):
         continue
-    m = re.search(r"(?m)^\+\+\+ b/(.+)$", part)
+    # `\t?` because git appends a TAB to the ---/+++ name when the path contains a space, and the
+    # TAB is not part of the name. `+++ /dev/null` (a deleted file) falls through to the header.
+    m = re.search(r"(?m)^\+\+\+ b/(.+?)\t?$", part)
     path = m.group(1) if m else None
     if path is None:
         m = re.match(r'diff --git a/(?:.+) b/(.+)', part)
@@ -293,6 +338,8 @@ budget = max_lines
 # a docs-only change still gets a full-size budget per file.
 primary = [c for c in chunks if priority(c[0]) == 0] or chunks
 per_file = max(60, max_lines // max(1, min(len(primary), max_files)))
+# Config and prose files get a flat 40 lines: enough to show a manifest or a doc edit in context,
+# small enough that they cannot crowd the source files out of the budget.
 SECONDARY_CAP = 40
 primary_paths = set(p for p, _ in primary)
 
@@ -300,6 +347,7 @@ primary_paths = set(p for p, _ in primary)
 # out 60 × 5 = 300 and the sixth file is omitted entirely — reintroducing the very starvation the
 # per-file cap exists to prevent. So reserve MIN_SLICE lines for every file still to come before
 # spending on this one. Each file is guaranteed a look-in; the tail gets a short one.
+# 12 lines is one -U3 hunk with a few changed lines: the least that still shows what a file's change is.
 MIN_SLICE = 12
 eligible, over = chunks[:max_files], chunks[max_files:]
 
@@ -327,13 +375,14 @@ for i, (path, lines) in enumerate(eligible):
 
 omitted.extend(p for p, _ in over)
 
-stat = subprocess.run(["git", "diff", "--stat", f"{base}...{source}"],
+stat = subprocess.run(GIT + ["diff", "--stat", f"{base}...{source}"],
                       capture_output=True, text=True, check=False).stdout.rstrip("\n")
 
 head = [
     "# Diff under review\n",
     f"- Base: `{base}` → source: `{source}` @ `{reviewed_sha[:12]}`",
-    f"- Files: {n_kept} of {n_all} changed (generated files excluded)",
+    f"- Files: {n_kept} of {n_all} changed (generated files excluded)"
+    + (f", {len(deleted)} deleted" if deleted else ""),
     f"- Diff budget: {max_lines - budget} of {max_lines} lines, {len(included)} of {len(chunks)} files\n",
     "```", stat, "```\n",
 ]
@@ -359,18 +408,21 @@ NEW_MODULE = re.compile(r"(^|/)(__init__\.py|index\.ts|index\.tsx|mod\.rs)$")
 # architect on every single change — the exact unbounded cost this rearchitecture exists to remove.
 VERSION_ONLY = re.compile(r'^[+-]\s*"?version"?\s*[:=]')
 
-added = subprocess.run(["git", "diff", "--name-only", "--diff-filter=A", f"{base}...{source}"],
-                       capture_output=True, text=True, check=False).stdout.split()
+# -z and a NUL split, NOT .split(): whitespace-splitting turned `new dir/__init__.py` into two
+# bogus names and hid the new module entry point from the gate.
+added = [p for p in subprocess.run(
+    GIT + ["diff", "--name-only", "-z", "--diff-filter=A", f"{base}...{source}"],
+    capture_output=True, text=True, check=False).stdout.split("\0") if p]
 
 def manifest_is_substantive(paths):
     """True when a manifest diff changes anything beyond its version field."""
     if not paths:
         return []
-    out = subprocess.run(["git", "diff", "-U0", "--no-color", f"{base}...{source}", "--"] + paths,
+    out = subprocess.run(GIT + ["diff", "-U0", "--no-color", f"{base}...{source}", "--"] + paths,
                          capture_output=True, text=True, check=False).stdout
     current, substantive = None, []
     for line in out.split("\n"):
-        m = re.match(r"^\+\+\+ b/(.+)$", line)
+        m = re.match(r"^\+\+\+ b/(.+?)\t?$", line)
         if m:
             current = m.group(1)
             continue
@@ -393,8 +445,12 @@ if schema_hits:
 manifest_hits = manifest_is_substantive([f for f in files if MANIFEST.search(f)])
 if manifest_hits:
     reasons.append(f"dependency manifest changed beyond its version ({', '.join(manifest_hits[:3])})")
-if len(files) > 25:
-    reasons.append(f"{len(files)} changed files exceeds the 25-file design-review threshold")
+# 25 files is a judgement call, not a measurement: past it a change is usually cross-cutting enough
+# that a design read pays for itself even with no single architectural signal above.
+ARCHITECT_FILE_THRESHOLD = 25
+if len(files) > ARCHITECT_FILE_THRESHOLD:
+    reasons.append(f"{len(files)} changed files exceeds the {ARCHITECT_FILE_THRESHOLD}-file "
+                   "design-review threshold")
 
 if effort == "low":
     architect = {"spawn": False, "reason": "--effort low never spawns the architect"}
@@ -406,7 +462,8 @@ elif signals["docs_only"]:
 elif reasons:
     architect = {"spawn": True, "reason": "; ".join(reasons)}
 else:
-    architect = {"spawn": False, "reason": "no architectural surface in the diff, 25 files or fewer"}
+    architect = {"spawn": False, "reason": "no architectural surface in the diff, "
+                 f"{ARCHITECT_FILE_THRESHOLD} files or fewer"}
 
 # ------------------------------------------------------------------- testing gate
 # Deterministic like the architect gate, and for the same reason: the previous
@@ -442,7 +499,10 @@ elif not nts:
         kinds.append("tests")
     if [f for f in files if is_doc_path(f)]:
         kinds.append("docs")
-    if not files:
+    if not files and deleted:
+        reason = (f"deletion-only diff ({len(deleted)} file(s) deleted): no new behaviour to test; "
+                  "the deletions are in DIFF.md")
+    elif not files:
         reason = "empty diff: nothing to review"
     else:
         reason = (f"{'/'.join(kinds)}-only diff: no new production behaviour to judge the tests "
@@ -518,6 +578,7 @@ context = {
     "effort": effort,
     "changed_files": files,
     "changed_file_count": len(files),
+    "deleted_files": deleted,
     "generated_excluded": int(n_all) - int(n_kept),
     "signals": signals,
     "diff": {
@@ -564,6 +625,5 @@ PY
 rc=$?
 [ "$rc" -eq 0 ] || die "could not build the review context (python3 exited $rc)"
 
-rm -f "$CHANGED.all" "$CHANGED" 2>/dev/null
 say "prepare-context: wrote $OUT/CONTEXT.json and $OUT/DIFF.md"
 exit 0

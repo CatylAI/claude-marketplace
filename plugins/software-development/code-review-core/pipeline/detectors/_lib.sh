@@ -60,3 +60,8 @@ filter_ext() {
 # filter_ext legitimately produces an empty file, and running a linter with zero path arguments
 # makes most of them scan the ENTIRE tree, which is exactly the unbounded cost being removed.
 any_lines() { [ -s "$1" ] && grep -q '[^[:space:]]' "$1"; }
+
+# excerpt <file> — the first 200 bytes of a tool's stderr, newlines folded, for a skip reason. A
+# reason is one line in SCAN-SUMMARY.md; 200 bytes holds a tool's first error line, which is the one
+# that names the cause, without pasting a traceback into the summary.
+excerpt() { head -c 200 "$1" 2>/dev/null | tr '\n' ' '; }

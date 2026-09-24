@@ -2,26 +2,30 @@
 
 GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.
 
-`code-review-core` runs a complete review over a plain `git diff` and deliberately posts nothing
-anywhere. This plugin is the other half: it talks to GitHub, and it forms no opinion about the code.
+`code-review-core` runs a complete review over a plain `git diff` and posts nothing anywhere. This
+plugin is the other half: it talks to GitHub and forms no opinion about the code. Keeping the
+judgement in a plugin that holds no credentials keeps findings free of provider-shaped wording, and
+lets the same review be posted to any forge.
 
-## When to use it
+## Skills
 
-- A `code-review-core` run has finished and its verdict needs to reach a pull request.
-- A branch needs a PR opened, its checks watched, its review feedback worked through, or the PR
-  merged with the strategy the repository actually permits.
-- A workflow under `.github/workflows/` is being written, hardened, or debugged.
+| Skill | Use it when | Surface |
+| --- | --- | --- |
+| `pr-lifecycle` | Opening a PR, waiting on or triaging its checks, answering review threads, updating its branch, merging it | Claude Code (gh); GitHub MCP tools elsewhere |
+| `review-transport` | A finished `code-review-core` run needs to reach a pull request | Claude Code (gh + script); GitHub MCP tools elsewhere |
+| `actions-authoring` | Writing, hardening or debugging a workflow under `.github/workflows/` | Anywhere for the YAML; gh or GitHub MCP tools for run logs |
 
-## When not to use it
+Other plugins refer to these by name: `code-review-core:review` hands off to
+`github-workflow:review-transport`, and `engineering-workflows:release-train` uses `pr-lifecycle`.
+`code-review-core`'s `deps.sh` detector enforces the pinning rule in `actions-authoring`.
 
-- You want the review itself. That is `code-review-core` — detectors, judgement agents, validator.
-  This plugin only moves the result.
-- You want issues, labels, milestones or project boards. That is `github-issues`.
-- You are on GitLab, Bitbucket, or anything that is not GitHub. Nothing here is portable, on purpose:
-  the forge-neutral half already exists in `code-review-core`, so a second transport plugin can be
-  written without touching the judgement.
-- You want a review posted without a review having been run. The transport refuses, and that refusal
-  is the most important thing it does.
+## What it does not own
+
+- **Judgement.** Severities, the verdict and the blocking list are settled by `code-review-core`'s
+  validator and `contract.py finalize` before this plugin is invoked. The transport passes them
+  through as they are.
+- **Issues, labels, milestones, project boards.** Those belong to `github-issues`.
+- **Other forges.** `gitlab-workflow` is the GitLab transport.
 
 ## Prerequisites
 
@@ -30,11 +34,9 @@ gh auth status      # the gh CLI, authenticated
 jq --version        # jq, for reading the review artifacts
 ```
 
-Both must be present. `post-review.sh` exits non-zero with a clear message if either is missing
-rather than degrading — a transport that half-works posts half a review.
-
 `gh` resolves the repository from the checkout's `origin` remote. Outside a checkout, pass
-`--repo <owner>/<repo>`.
+`--repo <owner>/<repo>`. Without a shell (Cowork, claude.ai), each skill falls back to the GitHub MCP
+server's tools when it is connected. The skills list the tool for each step.
 
 ## Install
 
@@ -45,103 +47,74 @@ rather than degrading — a transport that half-works posts half a review.
 /plugin install github-workflow@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your claude.ai
-account and Claude Code loads it automatically as a synced plugin — but see **Surface** below before
-you rely on it there.
+**Cowork / web:** enable the plugin for your claude.ai account. The skills load there; the script
+does not run without a shell.
 
 ## Layout
 
 ```
 github-workflow/
-├── .claude-plugin/plugin.json   manifest; declares the code-review-core dependency
-├── SKILL.md                     the plugin contract: what it owns, and what it refuses to own
+├── .claude-plugin/plugin.json       manifest; declares the code-review-core dependency
 ├── skills/
-│   ├── pr-lifecycle/            gh pr create / view / checks / review replies / merge
-│   ├── review-transport/        VALIDATED.json to a posted GitHub review
-│   └── actions-authoring/       workflow anatomy, SHA pinning, permissions, OIDC, debugging
+│   ├── pr-lifecycle/
+│   ├── review-transport/
+│   └── actions-authoring/           + references/patterns.md
 └── scripts/
-    ├── post-review.sh           the posting itself; the only thing here that calls the API
-    └── post-review.test.sh      its companion suite
+    ├── post-review.sh               the posting itself; the only file here that writes to GitHub
+    └── post-review.test.sh          its suite
 ```
 
 ## The `code-review-core` seam
 
-The two plugins communicate through one file and nothing else. `code-review-core` runs its pipeline —
-deterministic detectors, bounded judgement agents, then a validator that re-reads every cited line —
-and the validator writes `.code-review/VALIDATED.json` last, whole, with the `Write` tool. That
-document conforms to the agent contract: top-level `agent`, `category`, `findings`, and optionally
-`verdict`, `metrics` and `blocking_reason_ids`; each finding carries exactly ten required keys, of
-which three drive transport. `in_diff` decides whether a finding may become an inline thread at all,
-because GitHub's review API rejects a comment on a line the diff did not touch and takes the whole
-review down with it. `location` is the citation string the validator re-read, which this plugin
-parses into a path and a line and, when it will not parse, degrades to the review body rather than
-dropping the finding. `severity` is compared against `CODE_REVIEW_BLOCKING_FLOOR` (default `MINOR`)
-only to decide which findings are listed as blocking and, when the document carries no verdict, which
-review event to use. Nothing else crosses the seam: this plugin never re-ranks a finding, never
-computes a verdict the validator already stated, and — the point of the whole arrangement — refuses
-to post at all when `VALIDATED.json` is absent or unparseable, because an unfinished review posted as
-a clean one turns "we do not know" into a green check that the next human will trust.
+The two plugins share one file. `contract.py finalize` writes `.code-review/VALIDATED.json`
+atomically, even when an input is missing: in that case the verdict is `INCOMPLETE` and
+`incomplete_inputs` names what could not be read. A missing file therefore means finalize never ran,
+and the transport refuses to post.
+
+| Field | Transport use |
+| --- | --- |
+| `verdict` | Maps to the review event: `REQUEST_CHANGES`, `APPROVE`, or `COMMENT` for `INCOMPLETE` |
+| `blocking_reason_ids`, `blocking_floor` | The review body's blocking list, used as given |
+| `findings[].in_diff`, `location` | An inline comment when in the diff and `path:line` parses; the body otherwise |
+| `incomplete_inputs`, `coverage_notes`, `decision_errors` | Shown in the review body |
 
 ## Posting a review
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/post-review.sh" --dry-run     # plan and payload, no API call at all
-"$CLAUDE_PLUGIN_ROOT/scripts/post-review.sh"               # one atomic review on the PR
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/post-review.sh" --dry-run --pr <n>   # plan and payload; no API call
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/post-review.sh" --pr <n>             # one review on the PR
 ```
 
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--pr <number>` | the PR for the current branch | |
 | `--repo <owner>/<repo>` | from `origin` | required outside a checkout |
-| `--artifacts <dir>` | `.code-review` | where `VALIDATED.json` lives |
-| `--dry-run` | off | prints the routing plan and the exact JSON payload; makes no `gh` call |
+| `--artifacts <dir>` | `.code-review` | where `VALIDATED.json` and `CONTEXT.json` live |
+| `--dry-run` | off | prints the routing plan and the exact payload; makes no `gh` call |
+| `--no-approve` | off | an APPROVE verdict posts as a COMMENT that states it |
 
-Re-running is safe. Every comment carries a hidden marker naming its finding id, the script reads
-back what is already on the PR, and anything already present is skipped. A second run over an
-unchanged review posts nothing and says so.
+Re-running is safe. Each finding carries a hidden fingerprint of its path and title, so a re-run
+posts only findings that are new, plus a short review when the verdict changed. When the verdict
+stops being an approval, your earlier APPROVE is dismissed, since a comment would leave it standing.
+Markers from earlier versions are still recognised. `skills/review-transport` lists every guarantee
+and exit code, and the header of `scripts/post-review.sh` gives the marker grammar.
 
 ## Tests
 
 ```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/post-review.test.sh"
-zsh  "$CLAUDE_PLUGIN_ROOT/scripts/post-review.test.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/post-review.test.sh"
 ```
 
-Plain shell, no arguments, no network. The suite builds its own fixtures under `$TMPDIR` and a `trap`
-removes them on exit; nothing outside that directory is touched. Cases that would otherwise reach
-GitHub run either under `--dry-run` or against a `gh` stub placed first on `PATH`.
-
-The house style is **plant a defect, assert a non-zero exit** — a gate nobody has watched fail is an
-assumption, not a check. So the suite proves the refusals: a missing `VALIDATED.json`, a truncated
-one, a `PATH` with no `jq`, a document with zero findings and no verdict, and an invalid blocking
-floor each exit non-zero with a reason. It also proves that `INCOMPLETE` never becomes an approval,
-that a finding whose `title` is a command substitution and whose `evidence` contains a backtick
-expression creates no file, and that a re-run posts nothing it has already posted. A case whose
-binary is missing reports itself as **skipped**, never as a pass.
-
-## Surface
-
-This plugin works fully in **Claude Code** and only partially in **Cowork** (Claude Code on the web).
-
-| Name | Type | Purpose | Available |
-|------|------|---------|-----------|
-| `pr-lifecycle` | Skill | Open, inspect, watch, remediate and merge a pull request with `gh` | both (guidance), Claude Code only to run |
-| `review-transport` | Skill | Turn `.code-review/VALIDATED.json` into a posted GitHub review | both (guidance), Claude Code only to run |
-| `actions-authoring` | Skill | Write and harden `.github/workflows/`, and debug a red run | both (guidance), Claude Code only for the `gh` commands |
-| `scripts/post-review.sh` | Shell script | The posting itself | Claude Code only |
-| `scripts/post-review.test.sh` | Shell script | Its companion suite | Claude Code only |
-
-**Shell scripts are Claude Code only.** Cowork has no checkout and no shell, so `post-review.sh`
-cannot run there at all — a transport that shells out to `gh` is not something the web surface can
-execute. The skills still load and read as guidance on both surfaces, but every command they
-prescribe needs a terminal, so treat them as documentation in Cowork and as working procedure in
-Claude Code. `actions-authoring` is the one that degrades most gracefully: reviewing and writing
-workflow YAML is file work, and only its `gh run` debugging half needs a shell.
+Plain shell, no network. `gh` is a stub placed first on `PATH`, and fixtures live under `$TMPDIR`.
+The suite plants a defect and asserts the refusal: no artifact, a truncated artifact, no `jq`, a
+failed read-back, or a pending review. It also covers routing, the verdict mapping, command-injection
+safety, idempotency across renumbered ids and repeated runs, forged markers, dismissing a stale
+approval, self-authored PRs, the size limit and the 422 fallback. A case whose
+binary is missing reports itself as skipped, never as passed.
 
 ## Dependencies
 
-`code-review-core`, for the review whose result this plugin transports. That plugin depends on
-`dev-standards` in turn, so it is transitively present; nothing here references it by name.
+`code-review-core`, for the review this plugin posts.
 
 ## License
 

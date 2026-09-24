@@ -1,11 +1,9 @@
 ---
 name: poc-graduate
+description: "Closes a proof of concept with a decision, gated on the poc-validate checks: a production plan and new project directory, or a kill record in .poc/OUTCOME.md. Use when a POC's time box is up or its question is answered. Not for a checkpoint without a decision (use poc-validate)."
+when_to_use: "graduate a POC, kill the POC, close out the experiment, promote the prototype"
+allowed-tools: Read, Glob, Grep, Bash(pwd), Bash(date -u *), Bash(git log *), Edit(.poc/**), AskUserQuestion
 license: MIT
-description: Close out a proof of concept with a decision — promote it to a real project on the target runtime chosen at poc-start, or kill it and record what was learned. Re-runs the validation as a gate, requires an explicit human decision when the evidence is mixed, writes an outcome record either way, and turns POC mode off. Use when a POC's time box is up or its question has been answered. Not for checking a POC without deciding its fate, which is poc-validate, and not for starting one.
-when_to_use: graduate a POC, promote the prototype, kill the POC, close out the experiment, POC decision, make it a real project
-user-invocable: true
-context: fork
-allowed-tools: Read, Write, Edit, Glob, Grep, Bash(cat:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(mkdir:*), Bash(date:*), Bash(pwd:*), Bash(test:*), Task, AskUserQuestion
 ---
 
 # Graduate or Kill a POC
@@ -15,21 +13,11 @@ Ending in neither — the POC that simply continues — is the only failure.
 
 ## Step 1 — Gather context and verify there is a POC to close
 
-Run these and work from the output:
+Run `pwd` and `date -u +%Y-%m-%d` (the `closed_at` value in Step 5), then Read `.poc/poc.json`.
 
-```bash
-pwd
-test -f .poc/poc.json && echo present || echo "missing — not a POC"
-date -u +%Y-%m-%d
-```
-
-In order: the current directory, whether a POC contract is present, and today's date — it is
-the `closed_at` value written in Step 5 and the basis for "N days into an M-day box" in the
-outcome record.
-
-If you cannot run commands here — a surface with no shell — ask the user to paste the output
-and the contents of `.poc/poc.json`, and wait for both. Closing a POC against an assumed date
-or an unread contract writes a permanent record that is wrong.
+**Without a checkout (web/Cowork):** ask the user to paste `.poc/poc.json` and today's date, and
+wait. Run the same decision; present `PRODUCTION-PLAN.md` or `OUTCOME.md` and the updated
+contract as content for the user to save, and skip Step 3c.
 
 If `.poc/poc.json` is absent, stop and say so. If `poc_active` is already `false`, report
 the recorded outcome and stop — a POC is closed once.
@@ -39,8 +27,12 @@ list, and `target_runtime`.
 
 ## Step 2 — Gate on validation
 
-Run the `poc-validate` checks and take its verdict as the input to this decision. Do not
-proceed on a summary from memory or from the user; read the evidence.
+Read `${CLAUDE_PLUGIN_ROOT}/skills/poc-validate/SKILL.md` and apply its Steps 2–7 here, inline,
+to the contract already loaded: time box, kill criteria, success signal, evidence trail, drift,
+and the recommendation rules. Show the user its report. Read the file rather than invoking the
+skill: `poc-validate` removes Write and Edit while it is active, which would block Steps 3–5.
+Do not proceed on a summary from memory. If the file cannot be read (for example on the web),
+ask the user to run `poc-validate`, paste its report, and wait; decide from that report.
 
 - **Recommendation KILL** → go to Step 4. Do not offer graduation as the default path. If
   the user wants to override, that is their call to make explicitly, and the override plus
@@ -106,10 +98,10 @@ graduation, and it is only writable now, while the shortcuts are still remembere
 ### 3c. Create the project
 
 Create the production project in a new directory (default `../<name>`, confirmed with the
-user). Copy across what was proven; leave behind POC scaffolding. Then run `project-init`
-in the new directory to generate its CLAUDE.md hierarchy, and `adr-init` to record the
-decisions the POC settled — the runtime choice, the stack, the approach the evidence
-validated. Those decisions were just made with real evidence behind them, which is the
+user). Copy across what was proven; leave behind POC scaffolding. Then tell the user to open
+Claude Code in the new directory and run `/init` for its CLAUDE.md, and
+`/project-scaffold:adr-init` to record the decisions the POC settled: the runtime choice, the
+stack, the approach the evidence validated. Those decisions were just made with real evidence behind them, which is the
 best possible moment to write them down.
 
 Do not run git commands, create a remote, or open a merge or pull request. Tell the user
@@ -158,7 +150,7 @@ Update `.poc/poc.json` in place — do not delete the contract, it is the record
 {
   "poc_active": false,
   "outcome": "graduated | killed",
-  "closed_at": "<ISO timestamp>",
+  "closed_at": "<YYYY-MM-DD>",
   "closed_to": "<production directory, if graduated>",
   "decision_rationale": "<one line, including any human override of the validation verdict>"
 }
@@ -167,7 +159,14 @@ Update `.poc/poc.json` in place — do not delete the contract, it is the record
 Keep every original contract field alongside these. A contract that disappears when the POC
 closes cannot be checked later.
 
-## Step 6 — Report
+## Step 6 — Verify
+
+Read `.poc/poc.json` back: it parses, `poc_active` is `false`, `outcome` is `graduated` or
+`killed`, and every original contract field is still present. Confirm the outcome file exists
+(`.poc/OUTCOME.md` for a kill, `PRODUCTION-PLAN.md` in the new directory for a graduation). Fix and
+re-read on any mismatch.
+
+## Step 7 — Report
 
 State: the outcome, the evidence it rests on, the files written, and the next action —
 either the production project's path and its plan, or the outcome record and what it says

@@ -11,6 +11,9 @@ import {
   checkJavaScript,
   checkTerraform,
   checkShellScript,
+  introducedFindings,
+  reverseEdit,
+  smellReport,
 } from './post-write-edit.ts';
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'post-write-edit.ts');
@@ -132,6 +135,39 @@ describe('checkShellScript', () => {
   });
 });
 
+describe('findings are about what this call changed', () => {
+  it('reverseEdit reconstructs the previous file', () => {
+    assert.equal(reverseEdit('a NEW c', 'OLD', 'NEW', false), 'a OLD c');
+    assert.equal(reverseEdit('x x', 'y', 'x', true), 'y y');
+    assert.equal(reverseEdit('abc', 'b', '', false), null);
+  });
+
+  it('introducedFindings ignores counts when comparing', () => {
+    assert.deepEqual(introducedFindings(['QUALITY: 4 console statements'], ['QUALITY: 5 console statements']), []);
+    assert.deepEqual(introducedFindings([], ['SECURITY: eval()']), ['SECURITY: eval()']);
+  });
+
+  it('does not repeat a pre-existing finding on an unrelated Edit', () => {
+    const current = 'el.innerHTML = x;\nexport const port = 2;\n';
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: '/r/src/a.ts', old_string: 'port = 1', new_string: 'port = 2' },
+    };
+    assert.equal(smellReport(input, current, 'ts', '/r/src/a.ts'), null);
+  });
+
+  it('reports only the finding the Edit introduced', () => {
+    const current = 'el.innerHTML = x;\nconst r = eval(src);\n';
+    const input = {
+      tool_name: 'Edit',
+      tool_input: { file_path: '/r/src/a.ts', old_string: 'const r = 1;', new_string: 'const r = eval(src);' },
+    };
+    const report = smellReport(input, current, 'ts', '/r/src/a.ts') ?? '';
+    assert.match(report, /eval/);
+    assert.doesNotMatch(report, /innerHTML/);
+  });
+});
+
 describe('post-write-edit.ts as Claude Code runs it', () => {
   function run(payload: unknown) {
     return spawnSync(
@@ -150,9 +186,25 @@ describe('post-write-edit.ts as Claude Code runs it', () => {
     const file = join(dir, 'main.tf');
     writeFileSync(file, 'resource "aws_db_instance" "d" {\n  publicly_accessible = true\n}\n');
 
-    const r = run({ tool_name: 'Write', tool_input: { file_path: file, content: 'x' } });
+    const content = 'resource "aws_db_instance" "d" {\n  publicly_accessible = true\n}\n';
+    const r = run({ tool_name: 'Write', tool_input: { file_path: file, content } });
     assert.equal(r.status, 0, 'a PostToolUse hook must never block');
-    assert.match(r.stderr, /publicly_accessible/);
+    // On stdout as JSON additionalContext: stderr on exit 0 goes to the debug log, and Claude
+    // never sees it.
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.hookSpecificOutput.hookEventName, 'PostToolUse');
+    assert.match(out.hookSpecificOutput.additionalContext, /publicly_accessible/);
+    assert.equal(r.stderr.trim(), '');
+  });
+
+  it('is silent on stdout for a clean file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pwe-'));
+    spawnSync('git', ['init', '-q'], { cwd: dir });
+    const file = join(dir, 'ok.ts');
+    writeFileSync(file, 'export const a = 1;\n');
+    const r = run({ tool_name: 'Write', tool_input: { file_path: file, content: 'export const a = 1;\n' } });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, '');
   });
 
   it('ignores a tool it does not govern', () => {

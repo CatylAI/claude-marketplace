@@ -24,6 +24,8 @@
 # Portable bash 3.2+ / zsh.
 
 set -uo pipefail
+# No __pycache__ left in the plugin tree: the suites import normalize/contract/testpaths in place.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 DET="$SELF_DIR/comments.sh"

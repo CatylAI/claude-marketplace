@@ -1,226 +1,162 @@
 ---
 name: pr-lifecycle
-description: "Drive a GitHub pull request end to end with the gh CLI: open one from the current branch (including when it has no upstream), read its review state and CI status without polling in a loop, wait on checks and triage the ones that fail, fetch and reply to review comments thread by thread, flip a draft to ready, and merge with the strategy the repository actually permits. Use when a branch is ready for a PR, when a PR's checks are red, when review feedback needs addressing, or when a PR is ready to land. Every command here is literal and copy-pasteable. NOT a reviewer — it moves a PR through its states, it does not judge the diff."
+description: "Takes a GitHub pull request from open to merged with gh, following repository policy. Use when opening a PR, fixing its checks, answering review threads, updating its branch or merging. Not for posting a code review (use review-transport); not for issues (use github-issues:issue-lifecycle-github)."
+when_to_use: "open a PR, why are my checks failing, wait for CI, address review comments, resolve review threads, update the PR branch, merge this PR"
+allowed-tools: Bash(gh auth status), Bash(gh repo view *), Bash(gh pr view *), Bash(gh pr checks *), Bash(gh pr diff *), Bash(gh run list *), Bash(gh run view *), Bash(git status *), Bash(git branch --show-current), Read, Grep, Glob
 license: MIT
-when_to_use: "open a pull request, gh pr create, push a branch and open a PR, check PR status, why are my checks failing, gh pr checks, wait for CI, address review comments, resolve review threads, mark PR ready for review, squash merge, how should I merge this PR"
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(jq:*), Read, Grep, Glob
 ---
 
 # pr-lifecycle
 
-A pull request is a state machine: unopened, draft, open with red checks, open with feedback,
-mergeable, merged. Each state has one correct next command. This skill is those commands, literally.
+A pull request moves through a few states: unopened, draft, checks red, feedback open, mergeable,
+merged. Each section below is the next command for one state. Merge strategy, required checks and
+branch protection belong to the repository, so read them rather than assuming.
 
-Nothing here guesses at repository policy. Merge strategy, required checks and branch protection are
-properties of the repository, and every one of them is readable — so read it rather than assuming.
+Run `gh auth status` first; an auth failure otherwise surfaces as a confusing 404. Outside a
+checkout, add `--repo <owner>/<repo>` to every `gh` call. In `gh api` paths, `{owner}` and `{repo}`
+are filled in from the current checkout, so no shell variables are needed. Shell variables do not
+survive between Bash calls anyway.
 
-## Preconditions
-
-```bash
-gh auth status
-```
-
-If that is not clean, stop. Every command below fails in a way that looks like a different problem
-when authentication is the actual one. Outside a checkout, or when `origin` is ambiguous, add
-`--repo <owner>/<repo>` to every `gh` call.
-
-## Opening a pull request
-
-Establish where you are first. A PR opened from the wrong base is a nuisance to fix afterwards.
+## Open
 
 ```bash
-git branch --show-current
-git status --short
-gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'
+gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name'   # the base; do not assume main
+git push --set-upstream origin HEAD
 ```
 
-If the branch has no upstream, `gh pr create` would otherwise prompt. Push it explicitly:
+If the repository has a template (`.github/pull_request_template.md` or
+`.github/PULL_REQUEST_TEMPLATE/`), fill it in. Otherwise the body says what changed and why, plus how
+it was verified. Write it to a file and pass `--body-file`, which avoids quoting trouble:
 
 ```bash
-git push --set-upstream origin "$(git branch --show-current)"
+gh pr create --base <default-branch> --title "<issue key>: <what changed>" --body-file <path>
 ```
 
-Then open the PR. The title carries the issue key the branch name encodes; the body says what
-changed and why, because the diff already says how.
+If the branch name starts with an issue key (`PROJ-123-...`), put that key at the start of the
+title. Otherwise write a plain title and do not make up a key. Add `--draft` when the work is
+incomplete; `gh pr ready` flips it later.
+
+## Read state
 
 ```bash
-gh pr create \
-  --base main \
-  --title "PROJ-123: rotate the token cache on tenant change" \
-  --body "$(cat <<'BODY'
-## What changed
-
-The token cache key now includes the tenant id, and the cache is cleared on tenant switch.
-
-## Why
-
-Two tenants sharing one process could observe each other's cached tokens. Keying by tenant alone
-fixes the collision; clearing on switch fixes the window between switch and first miss.
-
-## Verification
-
-- Added `test_cache_is_scoped_per_tenant`, which fails on the previous implementation.
-- Existing suite green.
-
-Refs PROJ-123
-BODY
-)"
+gh pr view --json number,state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,url
+gh pr checks --json name,bucket,link --jq '.[] | select(.bucket != "pass" and .bucket != "skipping")'
 ```
 
-To derive the title's issue key from a branch named `PROJ-123-rotate-token-cache`:
+`mergeable` answers "does it conflict". `mergeStateStatus` answers "would the merge button be green"
+(`CLEAN`, `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`). A PR can be `MERGEABLE` and `BLOCKED` at once.
+Filter checks on `bucket` (`pass`, `fail`, `pending`, `skipping`, `cancel`) rather than `state`: raw
+states include `SKIPPED`, `NEUTRAL`, `ERROR` and `TIMED_OUT`, and filtering on `SUCCESS`/`FAILURE`
+gets both directions wrong.
 
-```bash
-git branch --show-current | sed -n 's/^\([A-Z][A-Z0-9]*-[0-9]*\).*/\1/p'
-```
+## Wait on CI
 
-An empty result means the branch does not encode a key — write a plain descriptive title rather than
-inventing one.
-
-Open it as a draft when CI has not run yet or the work is deliberately incomplete:
-
-```bash
-gh pr create --draft --base main --title "PROJ-123: rotate the token cache" --body "Work in progress."
-gh pr ready            # flip it to ready when it is
-gh pr ready --undo     # push it back to draft
-```
-
-## Reading state
-
-One command per question, each returning JSON you can act on. None of these mutate anything.
-
-```bash
-# The whole picture for the current branch's PR
-gh pr view --json number,title,state,isDraft,mergeable,mergeStateStatus,reviewDecision,url
-
-# Just the review decision: APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
-gh pr view --json reviewDecision --jq '.reviewDecision'
-
-# Every check, one line each
-gh pr checks
-
-# The failing ones only, as JSON
-gh pr checks --json name,state,link --jq '.[] | select(.state != "SUCCESS")'
-```
-
-`mergeable` is GitHub's answer to "does this conflict"; `mergeStateStatus` is its answer to "would
-the merge button be green" (`CLEAN`, `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`). They answer different
-questions and a PR can be `MERGEABLE` and `BLOCKED` at once — a required check has not passed.
-
-## Waiting on checks
-
-Do not poll in a tight loop. `gh` has a blocking form that consumes no API quota per iteration and
-exits non-zero when a check fails:
+Use gh's blocking watcher rather than a sleep loop. Run it with the Bash tool's
+`run_in_background: true`: a build usually outlasts the tool's timeout, and a backgrounded command
+notifies you when it exits.
 
 ```bash
 gh pr checks --watch --fail-fast
 ```
 
-Use `--interval 30` to slow it down on a long build. When it exits non-zero, get the failure before
-doing anything else:
+It refreshes every 10 seconds (`--interval <s>` changes that) and exits non-zero once a check fails.
+Add `--required` to wait only on the checks branch protection requires. Without `--watch`, exit code
+8 means checks are still pending. When a check fails, read the failure before changing anything:
 
 ```bash
-gh pr checks --json name,state,link --jq '.[] | select(.state == "FAILURE")'
-gh run list --branch "$(git branch --show-current)" --limit 5
+gh pr checks --json name,bucket,link --jq '.[] | select(.bucket == "fail")'
 gh run view <run-id> --log-failed
 ```
 
-`--log-failed` prints only the failing steps' output, which is the difference between reading fifty
-lines and reading fifty thousand. Triage in this order:
+Reproduce the failure locally before pushing a guess, because each CI attempt costs a push. Re-run
+(`gh run rerun <run-id> --failed`) only when you have a reason to think it was flaky, and state that
+reason. Re-running without one is how a real failure gets merged.
 
-1. **Reproduce locally.** A test that fails in CI and passes locally is usually an environment or
-   ordering difference, and chasing it in CI costs a push per attempt.
-2. **Read the failing step, not the job summary.** The summary says which job; the step says why.
-3. **Re-run only if you have reason to believe it is flaky**, and say so:
-   `gh run rerun <run-id> --failed`. A re-run without a hypothesis is how a real failure gets
-   merged.
+## Address review feedback
 
-## Addressing review feedback
-
-Inline review comments are not issue comments and do not come back from `gh pr view`. Fetch them
-from the API:
+Inline comments come from a different endpoint than `gh pr view`:
 
 ```bash
-OWNER_REPO="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
-PR="$(gh pr view --json number --jq '.number')"
-
-gh api "repos/$OWNER_REPO/pulls/$PR/comments" --paginate \
-  --jq '.[] | {id, path, line, user: .user.login, body}'
+gh api "repos/{owner}/{repo}/pulls/<n>/comments" --paginate \
+  --jq '.[] | {id, path, line: (.line // .original_line), user: .user.login, body}'
 ```
 
-Top-level review bodies and the review events (`APPROVED`, `CHANGES_REQUESTED`) come from a different
-endpoint:
+`line` is null on a comment whose code has since changed; `original_line` still places it. Reply
+in the comment's own thread, so the answer stays attached to the line:
 
 ```bash
-gh api "repos/$OWNER_REPO/pulls/$PR/reviews" --paginate \
-  --jq '.[] | {id, state, user: .user.login, body}'
+gh api --method POST "repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies" \
+  -f body='Fixed in <sha>: <one line on what changed>.'
 ```
 
-Work each comment, then reply in its own thread so the conversation stays attached to the line.
-Replying to comment `<comment-id>` uses the replies endpoint:
+REST cannot resolve a thread. GraphQL can. List the threads, then resolve the ones you addressed:
 
 ```bash
-gh api --method POST \
-  "repos/$OWNER_REPO/pulls/$PR/comments/$COMMENT_ID/replies" \
-  -f body='Fixed in 4f2a1c9 — the cache key now includes the tenant id.'
+gh api graphql -F owner='{owner}' -F name='{repo}' -F n=<n> -f query='
+  query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){
+    reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{databaseId path body}}}}}}}'
+gh api graphql -f id=<thread-id> -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}'
 ```
 
-Push the fixes, then say so once at the PR level rather than per comment:
+If you disagree with a comment, reply with your reason and leave the thread open for the reviewer.
+Leave code you believe is correct as it is. A push alone does not re-request review; run
+`gh pr edit <n> --add-reviewer <login>`.
+
+## Update the branch
 
 ```bash
-git push
-gh pr comment --body 'Pushed fixes for all four comments; each thread has the commit that addresses it.'
+gh pr update-branch <n> --rebase
 ```
 
-Ask for the re-review explicitly — a push alone does not re-request one:
+Without `--rebase`, GitHub merges the base into the branch. With it, the branch is rewritten on the
+server, so bring your local copy back in line with `git pull --rebase` before committing again.
+`dev-guardrails:session-sync` relies on this command and flag.
 
-```bash
-gh pr edit --add-reviewer <username>
-```
+## Merge
 
-Disagreeing with a comment is a legitimate outcome. Reply with the reason in the thread; do not
-silently leave it unaddressed, and do not change code you believe is correct to close a thread.
-
-## Merging
-
-The repository decides which strategies exist. Read it, do not assume:
+Merging is outward-facing and hard to undo. Show the user the state below and get an explicit yes
+first.
 
 ```bash
 gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed
+gh pr view <n> --json reviewDecision,mergeStateStatus,headRefOid
 ```
 
-Pick the flag matching a permitted strategy — passing one the repository disallows fails with a
-message that reads like a permissions problem:
+Merge only when `reviewDecision` is `APPROVED` (or the repository requires no review) and
+`mergeStateStatus` is `CLEAN`. Choose a strategy the repository allows: GitHub rejects a disallowed
+one with an error that looks like a permissions problem. Pin the head you checked, so a push that
+lands between the check and the merge makes the merge fail instead of shipping unreviewed code:
 
-| Repository setting | Flag |
+```bash
+gh pr merge <n> --squash --delete-branch --match-head-commit <headRefOid>
+```
+
+Pass `--auto` in place of an immediate merge only when the PR is approved and you have read which
+checks are required: auto-merge waits only for what branch protection requires. When the base
+branch requires a merge queue, no strategy flag is needed and `gh pr merge` adds the PR to the queue.
+Use `--admin`, which bypasses protection and the queue, only when the user explicitly asks for a
+bypass.
+
+## Verify
+
+```bash
+gh pr view <n> --json state,mergedAt,mergeCommit --jq '{state, mergedAt, sha: .mergeCommit.oid}'
+```
+
+`state` should be `MERGED` (or the PR should show as queued). A command that exits 0 is not proof
+that the PR landed.
+
+## Without gh
+
+On the web, or anywhere without a shell, use the GitHub MCP server if it is connected:
+
+| Step | MCP tool |
 | --- | --- |
-| `squashMergeAllowed: true` | `gh pr merge --squash` |
-| `mergeCommitAllowed: true` | `gh pr merge --merge` |
-| `rebaseMergeAllowed: true` | `gh pr merge --rebase` |
+| Open | `create_pull_request` |
+| Read state and checks | `pull_request_read` |
+| Reply to or resolve a thread | `add_reply_to_pull_request_comment`, `resolve_review_thread` |
+| Update the branch | `update_pull_request_branch` (check whether it offers rebase; the REST form merges) |
+| Merge | `merge_pull_request` or `enable_pr_auto_merge`, after the same user confirmation |
+| Failing job logs | `get_job_logs` |
 
-```bash
-# Merge now, deleting the branch afterwards
-gh pr merge --squash --delete-branch
-
-# Or queue it: merges as soon as required checks pass, without a human waiting
-gh pr merge --squash --auto --delete-branch
-```
-
-`--auto` is the right default when checks are slow and the PR is approved. It is the wrong default
-when you have not read the checks at all — auto-merge will happily land a PR whose only green checks
-are the ones that are not required.
-
-If the base has moved and the repository requires branches to be up to date:
-
-```bash
-gh pr update-branch
-```
-
-Confirm the landing rather than assuming the command that returned 0 did what you meant:
-
-```bash
-gh pr view --json state,mergedAt,mergeCommit --jq '{state, mergedAt, sha: .mergeCommit.oid}'
-```
-
-## Surface
-
-Claude Code only. Every command above needs a shell and a checkout; neither exists in Cowork.
+With neither a shell nor the MCP server, give the user the commands above to run themselves.

@@ -1,166 +1,208 @@
 ---
 name: terraform-review
+description: "Reviews a Terraform plan for what scanners cannot judge: blast radius, destructive replacement, orphaned state. Use when reviewing a Terraform merge request or a plan before apply. Not for lint or security rules (use code-review-core:review) or authoring conventions (use terraform-standards)."
 license: MIT
-description: "Reviewing an infrastructure-as-code change for the things a scanner cannot decide: blast radius, whether a resource replacement is destructive, and whether state will be orphaned. Use when reviewing a Terraform merge request or reading a plan before approving an apply. The mechanical checks belong to the review pipeline's detectors and are deliberately not repeated here."
 ---
 
 # Reviewing a Terraform Change
 
-## What this skill is not
-
-`code-review-core` ships a `terraform` detector that runs **`terraform fmt`, `tflint`,
-`checkov` and `tfsec`** over the changed `.tf` / `.tfvars` / `.hcl` files on every scan. It
-is deterministic, it is free, and it runs whether or not anyone remembered to.
-
-So do not spend a review on:
-
-- formatting, alignment, argument ordering — `terraform fmt`
-- deprecated arguments, unused declarations, invalid instance types, missing required
-  arguments, naming-convention rules — `tflint`
-- unencrypted storage, public access blocks, missing logging, open security groups, IMDSv1,
-  the entire library of known-bad resource configurations — `checkov` and `tfsec`
-
-Restating those in a human review has a real cost: it fills the comment thread with things
-that were already caught, and it trains the author to skim. A linter beats a reviewer at
-grep-shaped detection. Leave it to the linter.
-
-One gap worth knowing about, since it looks like it should be covered and is not:
-`terraform validate` is **never** run by the detector, on purpose — it requires
-`terraform init`, and a review scan authenticates nowhere. And the pipeline's `deps`
-detector reads package manifests, not `.tf` provider constraints. So provider and version
-pinning is on you, unless a `tflint` ruleset in the repo covers it.
-
-## What a reviewer is actually for
-
-Three questions no scanner can answer, because all three depend on state and on what the
-resource *is to the business* rather than on what the file says:
+`code-review-core`'s `terraform` detector already runs `terraform fmt`, `tflint` (including its
+default Terraform ruleset) and `checkov`/`tfsec` on every change. Skip formatting, deprecated
+syntax, missing constraints and known-bad resource settings; restating them trains authors to
+skim. This skill covers the three questions no scanner can answer:
 
 1. **What is the blast radius if this is wrong?**
-2. **Is anything here destroyed and rebuilt, and can it survive that?**
+2. **Is anything destroyed and rebuilt, and can it survive that?**
 3. **Does state end up matching reality?**
 
-## No plan, no review
+## Get the plan
 
-Review the **plan**, not the diff. A three-line diff can produce a plan that destroys a
-database, and a two-hundred-line refactor can produce a plan with zero changes. The diff
-tells you what the author wrote; only the plan tells you what will happen to *this*
-environment's *current* state.
+Review the **plan**, not the diff. A three-line diff can destroy a database; a two-hundred-line
+refactor can be a no-op. Ask for the plan from the pipeline job for the environment being
+changed; when a change goes to several environments, the production plan is the one that
+matters.
 
-Ask for the plan output — from the pipeline job, against the environment being changed.
-If the change is going to several environments, the plan for production is the one that
-matters, and it is not the same as the one for the sandbox.
+Accepted inputs, best first:
 
-Read the summary line, then read the body. `Plan: 3 to add, 1 to change, 2 to destroy`
-is where review starts, not where it ends.
+- `terraform show -json tfplan` output. Read `resource_changes[].change.actions`
+  (`["delete","create"]` is destroy-then-create, `["create","delete"]` is create-before-destroy)
+  and `resource_changes[].change.replace_paths` (the attributes forcing replacement).
+- The human-readable plan pasted from the job log.
+- On web or without credentials: whatever of the above the user pastes. Do not run `plan`
+  yourself against a shared environment; if there is no plan, ask for it rather than reviewing
+  the diff alone.
+
+A saved plan file and its JSON rendering contain sensitive values in plaintext. Ask for the
+relevant excerpt rather than the whole file when secrets could be in it, and never commit or
+attach a plan file to a merge request.
 
 ## Reading the plan
 
 | Symbol | Meaning | Reviewer's reaction |
 | --- | --- | --- |
-| `+` | create | Fine, usually. Check naming and that it is not a duplicate of something that already exists outside Terraform. |
-| `~` | update in place | The cheap case. Read what attribute changed. |
-| `-/+` | **destroy then create** | Stop here. This is the main event — see below. |
-| `+/-` | create then destroy (`create_before_destroy`) | Safer ordering, but still a new resource: new id, new endpoint, new ARN. Anything referencing the old one by a hardcoded value breaks. |
-| `-` | destroy, with no replacement | Why? Either an intentional removal, or something fell out of the configuration by accident. |
-| `# forces replacement` | the attribute that caused `-/+` | The single most important comment in the output. Find every one of them. |
-| `(known after apply)` on an attribute another resource depends on | A cascade | Downstream resources may replace too, and the plan cannot always show it. |
+| `+` | create | Check it does not duplicate something that already exists outside Terraform. |
+| `~` | update in place | Read which attribute changed. |
+| `-/+` | **destroy then create** | The main event — see below. |
+| `+/-` | create then destroy (`create_before_destroy`) | Safer ordering, but a new id, endpoint and ARN. Hardcoded references to the old one break. |
+| `-` | destroy, no replacement | Intentional removal, or something fell out of the configuration? |
+| `# forces replacement` | the attribute that caused `-/+` | Find every one. |
+| `(known after apply)` on an attribute others depend on | a cascade | Downstream resources may replace too. |
+
+Start at the summary line (`Plan: 3 to add, 1 to change, 2 to destroy`), then read the body.
 
 ### The replacement question
 
-For every `-/+`, answer out loud: **what is lost between the destroy and the create?**
+For every `-/+`, answer: **what is lost between the destroy and the create?**
 
 | Resource class | What replacement costs |
 | --- | --- |
-| Stateless compute, a function version, a task definition | Usually nothing. Replacement is the normal update path. |
-| A database instance or cluster | **The data**, unless a final snapshot is taken and restored — which is not the same resource and not the same endpoint. This is never a routine approval. |
-| A storage bucket or container registry | The contents, if `force_destroy` is set. If it is not set, the destroy fails halfway and leaves you with a partially applied change. |
-| Anything with a DNS name or endpoint that clients cache | A rebuild is an outage of however long propagation takes |
-| A security group or subnet with dependents | Cascading replacement of everything attached |
-| An IAM role | Every existing session using it, and any external trust policy naming it by ARN |
-| A key in a key management service | Data encrypted under the old key, if the key is genuinely destroyed rather than rotated |
+| Stateless compute, a function version, a task definition | Usually nothing. |
+| A database instance or cluster | **The data**, unless restored from a final snapshot — a different resource with a different endpoint. Never a routine approval. |
+| An RDS engine upgrade or parameter change shown as `~` | Not a replacement, but an in-place modify can still mean downtime. For MySQL, MariaDB and PostgreSQL instances without replicas (backups on), `blue_green_update { enabled = true }` makes the provider run an RDS Blue/Green deployment and switch over. Check `apply_immediately` too: `false` defers the change to the maintenance window, so the apply "succeeds" and the outage happens later. |
+| A storage bucket or container registry | The contents if `force_destroy` is set; if not, the destroy fails and leaves a partially applied change. |
+| Anything with a cached DNS name or endpoint | An outage for as long as propagation takes. |
+| A security group or subnet with dependents | Cascading replacement of everything attached. |
+| An IAM role | Every live session, and any external trust policy naming it by ARN. |
+| A KMS key | Data encrypted under it, if it is really scheduled for deletion. |
 
-Things that commonly force a replacement without the author intending it: a changed `name`
-or `name_prefix`, a changed availability zone or subnet, a changed engine version on some
-engines, a changed `count`/`for_each` key, and a provider upgrade that moved an attribute
-from updatable to force-new.
+Common unintended replacement triggers: a changed `name`/`name_prefix`, availability zone or
+subnet, a changed `count`/`for_each` key, and a provider upgrade that made an attribute
+force-new. The `# forces replacement` marker (or `replace_paths`) names the attribute; trust it
+over your memory of which attributes are force-new.
 
-Guardrails to look for in the same review: `lifecycle { prevent_destroy = true }` on the
-resources whose loss would be unrecoverable, `deletion_protection` where the provider
-offers it, and `skip_final_snapshot = false` on anything holding data. If a change *removes*
-one of those, that removal is the change being reviewed, whatever else is in the diff.
+Guardrails to look for: `lifecycle { prevent_destroy = true }` on unrecoverable resources,
+`deletion_protection = true` where the provider offers it, and `skip_final_snapshot = false`
+on anything holding data. Know their limits:
+
+- `prevent_destroy` makes a plan that would destroy the resource — including a `-/+` — fail
+  with an error. It is not a finding to "work around" by removing it in the same change.
+- `prevent_destroy` lives in the resource block. Delete the block (or the module call around
+  it) and the guard goes with it, and the plan shows a plain destroy. `deletion_protection`
+  is enforced by AWS and survives that; prefer it where it exists.
+- A change that removes any of these guardrails is the change under review, whatever else
+  is in the diff.
 
 ### Count and for_each index shifts
 
-A resource with `count` over a list is addressed by position: `module.x.aws_thing.y[2]`.
-Remove the second element and every subsequent resource shifts down one index, so
-Terraform plans to replace all of them — changing live resources purely because a list got
-shorter.
-
-`for_each` over a map addresses by key, so removing an entry destroys exactly that entry.
-Prefer it. But be aware that **converting `count` to `for_each` re-addresses every
-existing instance**, which is itself a mass replacement unless `moved` blocks are supplied.
-That conversion is a legitimate, valuable change and a dangerous one to approve casually:
-it should arrive with the `moved` blocks in the same change and a plan showing zero
-replacements.
+`count` over a list addresses by position: remove the second element and every later instance
+shifts index and is replaced. `for_each` over a map addresses by key; prefer it. Converting
+`count` to `for_each` re-addresses every instance, so it must arrive with `moved` blocks in the
+same change and a plan showing zero replacements.
 
 ## State orphaning
 
-The failure mode that survives the apply and bites weeks later: state and reality disagree,
-and nothing errors.
+State and reality disagree, and nothing errors.
 
 | Situation | What happens | What the change should contain |
 | --- | --- | --- |
-| A resource or module is **renamed** in the configuration | Terraform sees the old address gone and a new one arrived: destroy + create | A `moved` block from the old address to the new one, and a plan proving it is a no-op |
-| A resource is **deleted from the configuration** but should keep existing | Terraform destroys it | A `removed` block with `destroy = false`, so it leaves state without being deleted |
-| A resource exists in the cloud but not in state | Terraform tries to create it and fails on a name conflict, or worse, creates a duplicate | An `import` block, reviewed against the real resource's id |
-| Someone ran `terraform state rm` | The resource is live, unmanaged, and invisible to every future plan | It should not be in the change at all; ask what problem it was solving |
-| A resource was **moved between root modules** | It is destroyed by one and created by the other, in whichever order the two pipelines happen to run | A deliberate, sequenced migration: import into the new state first, `removed` from the old second |
-| The apply was **`-target`ed** | State is a partial application of the configuration; the next full plan shows diffs nobody expected | `-target` in a pipeline is a finding. It is a debugging tool, not a deploy mechanism. |
+| A resource or module is **renamed** | destroy + create | A `moved` block from old to new address, and a plan showing no changes for it |
+| A resource is **deleted from config** but must keep existing | destroyed | A `removed` block naming the old address, with `lifecycle { destroy = false }` (see below) |
+| A resource exists in the cloud but not in state | create fails on a name conflict, or creates a duplicate | An `import` block, reviewed against the real resource's id |
+| Someone ran `terraform state rm` | the resource is live and unmanaged | Nothing in the change; ask what problem it solved and replace it with a `removed` block |
+| A resource **moves between root modules** | one state destroys it, the other creates it, in whatever order the pipelines run | Sequenced: `import` into the new state first, then `removed` with `destroy = false` from the old |
+| The apply was **`-target`ed** | state is a partial application; the next full plan shows surprises | `-target` in a pipeline is a finding |
 
-The reviewer's shortcut: **any change to a resource's address deserves the same scrutiny as
-a change to its arguments.** Renaming for clarity is a good thing to do and a thing that
-destroys production if it arrives without a `moved` block.
+```hcl
+removed {
+  from = aws_s3_bucket.legacy
+
+  lifecycle {
+    destroy = false
+  }
+}
+```
+
+Any change to a resource's address deserves the same scrutiny as a change to its arguments.
 
 ## Blast radius
 
-Before approving, size the change:
+- **How many resources, in which environment?** 40 in production is a different review from 2
+  in a sandbox.
+- **Is it shared?** A VPC, shared subnet, transit attachment, shared key or central logging
+  change affects every workload in the account.
+- **Who consumes this stack's outputs?** Renaming or removing an output breaks a consumer at
+  its next apply, not this one.
+- **Is it reversible?** Revert-and-apply restores most things, not deleted data.
+- **Has it applied cleanly in a lower environment?** If not, the description should say why.
 
-- **How many resources, and in which environment?** A plan that touches 40 resources in
-  production is not the same review as one that touches 2 in a sandbox.
-- **Is this environment shared?** A change to a VPC, a shared subnet, a transit
-  attachment, a shared key or a central logging configuration affects every workload in the
-  account, including ones the author has never heard of.
-- **Who consumes the outputs of this stack?** If another stack reads this one's remote
-  state or its published parameters, renaming or removing an output is a breaking change to
-  a consumer that will not fail until its own next apply.
-- **Is it reversible?** Reverting the commit and re-applying restores most things. It does
-  not restore deleted data, and it does not un-send whatever the intermediate state did.
-- **Has it been applied anywhere first?** A change that landed cleanly in a lower
-  environment is evidence. A change going straight to production is not, and the reason
-  should be in the description.
+## Cross-cutting checks
 
-## Cross-cutting things to check
-
-- **Secrets.** No literal credential in `.tf` or committed `.tfvars`; data sources for
-  anything sensitive. Note that any secret the configuration reads is in state in
-  plaintext regardless — so a new secret-reading data source is also a question about who
-  can read the state bucket. See `dev-standards` → `secrets-management`.
-- **Provider upgrades bundled with resource changes.** Keep them separate. When a bundled
-  change produces an unexpected replacement, you cannot tell whether the author caused it
-  or the provider did.
-- **Module source and version.** A module pinned to a branch rather than a version is
-  mutable remote code: it can change under you between plan and apply.
-- **Environment parity.** If a change goes to one environment and not the others, the
-  description should say why. Silent divergence is how the sandbox stops predicting
-  production.
-- **Tagging.** Not cosmetic — cost attribution, ownership routing during an incident, and
-  frequently the thing IAM conditions and automation match on.
+- **Secrets.** A new secret-reading data source puts that secret in state, so it is also a
+  question about who can read the state bucket (`dev-standards:secrets-management`).
+- **Provider upgrades bundled with resource changes.** Ask to split them; otherwise an
+  unexpected replacement has two possible causes.
+- **Environment parity.** A change going to one environment only should say why.
+- **Tags.** Cost attribution, incident routing, and often what IAM conditions match on.
+- **IAM and trust policies** in the change: review them with `aws-iam-boundaries`.
 
 ## The approval sentence
 
-Before approving, write one sentence in the review: *"This changes `<what>` in `<which
-environment>`; the destructive operations are `<list, or none>`; if it is wrong, `<what
-breaks>` and recovery is `<how>`."*
+Before approving, write one sentence: *"This changes `<what>` in `<environment>`; the
+destructive operations are `<list, or none>`; if it is wrong, `<what breaks>` and recovery is
+`<how>`."* If the plan cannot support that sentence, ask for what is missing instead of
+approving on a clean scan.
 
-If you cannot complete that sentence from the plan, you have not reviewed the change yet —
-ask for what is missing rather than approving on the strength of a clean scan.
+End the review with one verdict line, `Verdict: <APPROVE | REQUEST_CHANGES | NEEDS_PLAN>`:
+
+| Verdict | When |
+| --- | --- |
+| `APPROVE` | The approval sentence is complete and every destructive operation is intended and survivable. |
+| `REQUEST_CHANGES` | The plan is trustworthy but the change needs something first: a `moved` block, a guardrail, a safer upgrade path. |
+| `NEEDS_PLAN` | There is no plan, it is for the wrong environment, or it cannot be trusted (for example, all creates against an existing environment). |
+
+<example>
+Plan (production): `Plan: 0 to add, 1 to change, 0 to destroy`, `~ aws_db_instance.main`,
+`engine_version: "15.7" -> "16.4"`, `allow_major_version_upgrade = true`,
+`apply_immediately = true`, no `blue_green_update` block.
+
+Review: This changes the primary PostgreSQL instance in production; the destructive operations
+are none, but a major in-place upgrade takes the database offline for the upgrade's duration,
+starting at apply. If it is wrong, every service on this database is down until the upgrade
+completes or the instance is restored from snapshot. Request: add `blue_green_update { enabled = true }`
+(the instance has no replicas and backups are on) or schedule a window, and confirm a manual
+snapshot is taken first.
+
+Verdict: REQUEST_CHANGES
+</example>
+
+<example>
+Diff: `aws_s3_bucket.logs` renamed to `aws_s3_bucket.access_logs`. Plan (staging):
+`Plan: 1 to add, 0 to change, 1 to destroy`, `- aws_s3_bucket.logs`, `+ aws_s3_bucket.access_logs`.
+
+Review: This changes the access-log bucket in staging; the destructive operation is a destroy of
+the existing bucket (it fails if the bucket is not empty and `force_destroy` is unset, leaving
+a half-applied change). The rename needs a plan showing no changes for the bucket and this block:
+
+```hcl
+moved {
+  from = aws_s3_bucket.logs
+  to   = aws_s3_bucket.access_logs
+}
+```
+
+Verdict: REQUEST_CHANGES
+</example>
+
+<example>
+Plan (dev): `Plan: 214 to add, 0 to change, 0 to destroy` for a stack that has run in dev for
+months; the diff only edits one variable default.
+
+Review: Not reviewable as a change. A plan that creates an existing environment means the
+backend `key` or `-backend-config` file points at an empty state. Check the init command in the
+job log against `backends/dev.s3.tfbackend` before anything is applied.
+
+Verdict: NEEDS_PLAN
+</example>
+
+## Verify
+
+Before posting the review:
+
+1. Every `-/+`, `-` and `# forces replacement` in the plan is named in the review, or you
+   have stated that there are none.
+2. Every renamed or removed address has a matching `moved` or `removed` block, or a finding.
+3. The approval sentence is written and every blank in it is filled from the plan.
+4. The review ends with exactly one `Verdict:` line from the table above.
+
+If there is no plan (only a diff), return a single finding asking for the plan for the target
+environment, with `Verdict: NEEDS_PLAN`.

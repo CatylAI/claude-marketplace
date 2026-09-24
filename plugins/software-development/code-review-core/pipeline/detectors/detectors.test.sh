@@ -29,6 +29,8 @@
 # Portable bash 3.2+ / zsh.
 
 set -uo pipefail
+# No __pycache__ left in the plugin tree: the suites import normalize/contract/testpaths in place.
+export PYTHONDONTWRITEBYTECODE=1
 
 # Two zsh defaults this file relies on bash's behaviour for, and neither has a portable rewrite that
 # stays readable: `for x in $LIST` (zsh does not word-split an unquoted expansion, so the whole list

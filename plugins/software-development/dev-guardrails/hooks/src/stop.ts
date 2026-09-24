@@ -1,19 +1,32 @@
-// Stop hook: the completion gate. Three nudges, all non-blocking, all exiting 0.
+// Stop hook: the completion gate. Four non-blocking nudges: ticket, ADR, CI, dependencies.
 //
 // A Stop hook fires at the one moment when the whole change is visible at once and nothing has
 // been pushed yet. That makes it the right place for "you changed X and not the Y that records
-// it" — and the wrong place for anything expensive or chatty, because it fires at the end of
+// it", and the wrong place for anything expensive or chatty, because it fires at the end of
 // EVERY turn.
 //
-// THE FIRING RATE IS THE DESIGN CONSTRAINT. A nudge that fires on most turns is worse than no
-// nudge: it teaches the reader to skip the channel it shares with the real ones. So each
-// predicate below is deliberately narrow, and each is pure over a file list so its rate can be
-// measured against a real repository instead of guessed at.
+// WHERE THE NUDGE GOES. Plain stdout from a Stop hook reaches only the debug log. The two visible
+// channels are `hookSpecificOutput.additionalContext`, which makes the conversation continue so
+// Claude can act (an extra model turn every time it fires), and `systemMessage`, which shows the
+// user a warning line and ends the turn normally. These nudges are about decisions the user owns
+// (record an ADR, move the ticket, check the pipeline), so they go to the user as a systemMessage.
 //
-// All three suppress themselves once the work is committed: the file lists come from the working
-// tree and the index, so they go quiet on commit rather than nagging for the life of the branch.
+// THE FIRING RATE IS THE DESIGN CONSTRAINT. A nudge that fires on most turns teaches the reader
+// to skip the channel. So each predicate is narrow and pure over a file list, and the whole
+// message is shown once per session: an identical message on the next turn is suppressed (the
+// last one shown is remembered per session_id in the plugin's scratch state directory).
+//
+// All three go quiet once the work is committed: the file lists come from the working tree and the
+// index.
+//
+// FAILURE MODE: fail open, silently. Any error exits 0 with no output; a Stop hook must never be
+// the reason a turn ends badly.
 
-import { context } from './lib/output.ts';
+import { systemMessageJson } from './lib/output.ts';
+import { readStdin } from './lib/stdin.ts';
+import { stateFile } from './lib/state-dir.ts';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   getBranch,
   getBaseBranch,
@@ -22,7 +35,7 @@ import {
   getAddedFiles,
 } from './lib/git.ts';
 import { execArgv } from './lib/shell.ts';
-import { extractTicket } from './pre-bash.ts';
+import { extractTicket } from './lib/ticket.ts';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -91,63 +104,93 @@ export function shouldNudgeDependencies(changedFiles: string[]): boolean {
   return changedFiles.some((f) => DEPENDENCY_MANIFEST.test(f));
 }
 
-function run(): void {
+/** The nudges for the current tree, in display order. Empty when there is nothing to say. */
+function collectNudges(): string[] {
+  if (!isGitRepo()) return [];
+
+  const branch = getBranch();
+  const baseBranch = getBaseBranch();
+  if (branch === 'detached' || !baseBranch) return [];
+
+  const nudges: string[] = [];
+  const ticket = extractTicket(branch);
+  if (ticket) {
+    // argv, not a shell string. `baseBranch` is whatever the REMOTE advertises through
+    // refs/remotes/origin/HEAD; getBaseBranch() already refuses anything that is not a plain
+    // ref name, and running it without a shell means a substitution could not fire even if
+    // that validation were ever loosened.
+    const commitCount = execArgv('git', ['rev-list', '--count', `${baseBranch}..HEAD`], {
+      timeout: 5000,
+    });
+    // The count is deliberately left out of the text: a message that changes with every commit
+    // would defeat the once-per-session suppression.
+    if (commitCount && parseInt(commitCount, 10) > 0) {
+      nudges.push(`Ticket sync: ${branch} has commits for ${ticket}. If the work is done, move the issue.`);
+    }
+  }
+
+  const changedFiles = getChangedFiles();
+  const addedFiles = getAddedFiles();
+
+  if (shouldNudgeAdr(changedFiles, addedFiles)) {
+    nudges.push(
+      'ADR currency: a decision-bearing path changed (code, or a new gate, hook, pipeline or ' +
+        'plugin manifest) and no decision record did. If this changed an architectural decision, ' +
+        'record it in the same change.',
+    );
+  }
+  if (shouldNudgeCi(changedFiles)) {
+    nudges.push(
+      'CI changed: confirm the edited pipeline actually runs. A malformed job is skipped ' +
+        'silently, and a job that never runs looks like a job that passes.',
+    );
+  }
+  if (shouldNudgeDependencies(changedFiles)) {
+    nudges.push(
+      'Dependencies changed: regenerate the lockfile in the same change, so you and CI install ' +
+        'the same tree.',
+    );
+  }
+  return nudges;
+}
+
+/**
+ * Should `message` be shown for `sessionId`, given what was shown last? Records it when yes.
+ * Without a writable state directory it always says yes: a repeated nudge beats a lost one.
+ */
+export function shouldShowOnce(
+  sessionId: string,
+  message: string,
+  path: string | null = stateFile('stop-nudges.json'),
+): boolean {
+  if (!path || !sessionId) return true;
+  const digest = createHash('sha256').update(message).digest('hex');
+  let seen: Record<string, string> = {};
   try {
-    if (!isGitRepo()) return;
-
-    const branch = getBranch();
-    const baseBranch = getBaseBranch();
-    if (branch === 'detached' || !baseBranch) return;
-
-    const ticket = extractTicket(branch);
-    if (ticket) {
-      // argv, not a shell string. `baseBranch` is whatever the REMOTE advertises through
-      // refs/remotes/origin/HEAD; getBaseBranch() already refuses anything that is not a plain
-      // ref name, and running it without a shell means a substitution could not fire even if
-      // that validation were ever loosened.
-      const commitCount = execArgv(
-        'git',
-        ['rev-list', '--count', `${baseBranch}..HEAD`],
-        { timeout: 5000 },
-      );
-      if (commitCount && parseInt(commitCount, 10) > 0) {
-        context(
-          `TICKET SYNC: ${branch} has ${commitCount} commit(s) for ${ticket}. If the work is ` +
-            'done, move the issue — nothing else will.',
-        );
-      }
-    }
-
-    const changedFiles = getChangedFiles();
-    const addedFiles = getAddedFiles();
-
-    if (shouldNudgeAdr(changedFiles, addedFiles)) {
-      context(
-        'ADR CURRENCY: a decision-bearing path changed with no decision record updated — a code ' +
-          'path, or a NEW gate, hook, pipeline or plugin manifest. If this introduced or altered ' +
-          'an architectural decision (a module boundary, a dependency, an auth or data-model ' +
-          'choice, infrastructure topology), record it in the same change. If it did not, this ' +
-          'line needs nothing from you.',
-      );
-    }
-
-    if (shouldNudgeCi(changedFiles)) {
-      context(
-        'CI CHANGED: pipeline configuration was edited. Confirm the change actually runs — a ' +
-          'malformed job is skipped silently, and a job that never runs looks exactly like a job ' +
-          'that passes.',
-      );
-    }
-
-    if (shouldNudgeDependencies(changedFiles)) {
-      context(
-        'DEPENDENCIES CHANGED: a dependency manifest was edited. Make sure the lockfile was ' +
-          'regenerated in the same change — a manifest and lockfile that disagree install ' +
-          'different trees for you and for CI.',
-      );
-    }
+    if (existsSync(path)) seen = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, string>;
   } catch {
-    // Silent failure — a Stop hook must never be the reason a turn ends badly.
+    seen = {};
+  }
+  if (seen[sessionId] === digest) return false;
+  seen[sessionId] = digest;
+  try {
+    writeFileSync(path, JSON.stringify(seen), 'utf-8');
+  } catch {
+    /* best-effort */
+  }
+  return true;
+}
+
+async function run(): Promise<void> {
+  try {
+    const input = await readStdin();
+    const nudges = collectNudges();
+    if (nudges.length === 0) return;
+    const message = `dev-guardrails:\n- ${nudges.join('\n- ')}`;
+    if (!shouldShowOnce(input.session_id ?? '', message)) return;
+    process.stdout.write(systemMessageJson(message) + '\n');
+  } catch {
+    // Fail open: see the header.
   }
 }
 
@@ -158,6 +201,6 @@ function run(): void {
 // one passing test, exit code 0, green, and never invokes a single assertion. A suite that cannot
 // fail is worse than a missing one, because it is counted as coverage.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  run();
+  await run();
   process.exit(0);
 }

@@ -277,14 +277,17 @@ else fail "a missing file should be an error, got $RC"; fi
 if [ ! -d "$DG/hooks/src" ]; then
   skip "dev-guardrails hooks not found — cannot run the calibration case"
 else
+  # Count the hook entry points rather than hard-coding them, so cutting or adding a hook in
+  # dev-guardrails does not make this calibration test lie.
+  DG_HOOKS="$(find "$DG/hooks/src" -maxdepth 1 -name '*.ts' ! -name '*.test.ts' | wc -l | tr -d ' ')"
   run_sut --dir "$DG/hooks/src"
   linted="$(printf '%s\n' "$OUT" | sed -n 's/^linted \([0-9][0-9]*\) file.*/\1/p' | head -1)"
   if [ "$RC" -ne 0 ]; then
     fail "dev-guardrails hooks/src — known-correct code was rejected: $(printf '%s' "$OUT" | grep -E '^(ERROR|WARN)' | head -3 | tr '\n' ' ')"
   elif printf '%s' "$OUT" | grep -qE '^(ERROR|WARN)'; then
     fail "dev-guardrails hooks/src — $(printf '%s' "$OUT" | grep -cE '^(ERROR|WARN)') finding(s) against known-correct code: $(printf '%s' "$OUT" | grep -E '^(ERROR|WARN)' | head -3 | tr '\n' ' ')"
-  elif [ -z "$linted" ] || [ "$linted" -lt 14 ]; then
-    fail "dev-guardrails hooks/src — clean but only linted '$linted' file(s); the package has 14 hooks"
+  elif [ -z "$linted" ] || [ "$linted" -lt "$DG_HOOKS" ]; then
+    fail "dev-guardrails hooks/src — clean but only linted '$linted' file(s); the package has $DG_HOOKS hooks"
   else
     pass "dev-guardrails hooks/src: $linted files linted, zero findings"
   fi

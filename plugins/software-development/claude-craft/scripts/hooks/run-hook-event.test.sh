@@ -357,6 +357,10 @@ else
 
   # And the gate actually fires on the payload the runner builds — proof the fixture is
   # realistic enough to exercise real logic, not just to survive it.
+  #
+  # `rm -rf /` is a catastrophic target, which dev-guardrails blocks (exit 2) on every
+  # platform with no escape marker (see pre-bash/rm-rf.ts). A silent exit 0 would mean the
+  # payload never reached the gate.
   run_sut --event PreToolUse --tool Bash --set 'tool_input={"command":"rm -rf /"}' --plugin-root "$DG" -- \
     node --experimental-strip-types --disable-warning=ExperimentalWarning "$DG/hooks/src/pre-bash.ts"
   if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -Fq 'exit code  2'; then

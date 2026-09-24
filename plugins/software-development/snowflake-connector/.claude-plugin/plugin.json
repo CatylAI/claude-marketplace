@@ -1,7 +1,7 @@
 {
   "name": "snowflake-connector",
-  "version": "0.1.0",
-  "description": "Bring-your-own-account Snowflake connector: a setup wizard for account identifier, auth method and role, plus the cost-aware discipline for querying a warehouse safely.",
+  "version": "0.2.0",
+  "description": "Connect Claude Code to your own Snowflake account with a read-only service role, via Snowflake's managed MCP server or the snow CLI, and query it with cost-bounded, verified SQL.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"
@@ -16,5 +16,20 @@
   ],
   "dependencies": [
     "dev-standards"
-  ]
+  ],
+  "userConfig": {
+    "snowflake_mcp_url": {
+      "type": "string",
+      "title": "Snowflake MCP server URL",
+      "description": "https://<orgname>-<account_name>.snowflakecomputing.com/api/v2/databases/<DB>/schemas/<SCHEMA>/mcp-servers/<NAME>",
+      "required": false
+    },
+    "snowflake_pat": {
+      "type": "string",
+      "title": "Snowflake programmatic access token",
+      "description": "PAT for the read-only service user, restricted to the agent role. Generated in Snowsight.",
+      "sensitive": true,
+      "required": false
+    }
+  }
 }

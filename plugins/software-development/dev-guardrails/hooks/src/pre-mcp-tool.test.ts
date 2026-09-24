@@ -25,6 +25,15 @@ describe('isPublishingTool', () => {
     assert.ok(isPublishingTool('mcp__wiki__update_page'));
   });
 
+  it('covers tools that commit files or send mail, not only chat and review surfaces', () => {
+    assert.ok(isPublishingTool('mcp__github__create_or_update_file'));
+    assert.ok(isPublishingTool('mcp__github__push_files'));
+    assert.ok(isPublishingTool('mcp__gitlab__create_snippet'));
+    assert.ok(isPublishingTool('mcp__Gmail__create_draft'));
+    assert.ok(isPublishingTool('mcp__Gmail__forward'));
+    assert.ok(isPublishingTool('mcp__Google_Calendar__create_event'));
+  });
+
   it('leaves read-only tools alone', () => {
     // A gate on a read is pure cost: nothing leaves the session.
     assert.equal(isPublishingTool('mcp__forge__list_pull_requests'), false);
@@ -154,4 +163,25 @@ describe('pre-mcp-tool.ts as Claude Code runs it', () => {
     );
     assert.equal(r.code, 0);
   });
+
+  // Malformed input must fail OPEN and quietly, never crash with a stack trace: a hook that
+  // throws on `null` stdin is a hook that blocks or noisily errors on every MCP call.
+  for (const [label, payload] of [
+    ['JSON null', 'null'],
+    ['JSON array', '[]'],
+    ['JSON number', '5'],
+    ['non-object tool_input', JSON.stringify({ tool_name: 'mcp__x__y', tool_input: 'oops' })],
+    ['empty stdin', ''],
+  ] as const) {
+    it(`does not crash on ${label}`, () => {
+      const env = { ...process.env };
+      delete env.CLAUDE_GUARDRAILS_OFF;
+      const r = spawnSync(
+        process.execPath,
+        ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', HOOK],
+        { input: payload, encoding: 'utf-8', env },
+      );
+      assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr}`);
+    });
+  }
 });

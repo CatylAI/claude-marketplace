@@ -1,55 +1,50 @@
 # snowflake-connector
 
-Bring-your-own-account Snowflake access for Claude Code: a setup wizard that walks you from
-"I have a Snowflake login" to a verified, read-only connection, and a querying skill built
-around the fact that the hazard in a data warehouse is the bill rather than the error
-message.
-
-Works in **Claude Code** and in **Cowork** (Claude Code on the web) — with an important
-caveat about shell access and credentials, below.
+Bring-your-own-account Snowflake access for Claude Code. A setup skill takes you from "I have a
+Snowflake login" to a verified, read-only connection, and a querying skill keeps every query
+bounded, because in a data warehouse the risk is usually the bill, not an error message.
 
 ## What it is
 
-Two skills and nothing else. There is no account identifier, no client id, no role name and
-no credential anywhere in this plugin, and there never will be. Every account-specific
-value is a placeholder you fill in: `<orgname>-<account_name>`, `<WAREHOUSE>`, `<ROLE>`,
-`<DATABASE>.<SCHEMA>`.
+Two skills and one MCP server entry. The plugin ships no account identifier, user, role or
+credential. You supply them, either as plugin settings (MCP path) or as a local `snow` CLI
+connection (fallback).
 
-That is a deliberate design choice rather than a precaution. A connector shipping one
-team's account details works perfectly for that team and fails for everyone else in a way
-that looks like a bug instead of like missing configuration.
+- **Default: Snowflake-managed MCP server.** `.mcp.json` registers a remote HTTP server named
+  `snowflake`. Its URL and token come from two plugin settings, `snowflake_mcp_url` and
+  `snowflake_pat` (a programmatic access token). Claude Code stores the token in the macOS
+  Keychain, or `~/.claude/.credentials.json` elsewhere, never in `settings.json`.
+  Until the URL is set, `/mcp` shows `snowflake` as `not configured` and Claude Code does not try
+  to connect; with a URL but a missing or wrong token, it shows a failed connection (401). The
+  skills fall back to the CLI path in both cases.
+- **Fallback: the `snow` CLI** with key-pair authentication, for accounts without a managed MCP
+  server.
+
+Both paths use a dedicated read-only service user, so a misread instruction ends in a
+permissions error instead of a changed table.
 
 ## When to use it
 
-- Connecting a session to Snowflake for the first time, or after rotating a key or a
-  client secret.
-- Deciding between key-pair, OAuth and SSO authentication for an agent, and which role it
-  should run as.
-- A connection fails and you need to find out which layer broke — hostname, auth, role, or
-  grants.
-- Writing or reviewing a warehouse query, especially one that might scan more than you
+- Connecting to Snowflake for the first time, or after rotating a key or token.
+- A connection fails and you need to find which layer broke: hostname, auth, role or grants.
+- Writing, running or reviewing a warehouse query, especially one that might scan more than you
   intend.
-- Working out why a query was slow or expensive, from its profile rather than from a guess.
+- Working out why a query was slow or expensive.
 
 ## When not to use it
 
-- **You want grants applied.** These skills tell you which grants to ask for and why. They
-  do not run `GRANT`; if you hold the rights, running it is a deliberate act you perform
-  yourself.
-- **You want somewhere to keep the credential.** Private keys, client secrets and
-  passwords belong in your platform keychain or secrets manager — `dev-standards` →
-  `secrets-management` has the conventions.
-- **You are designing tables.** Data modelling, clustering strategy and ELT are out of
-  scope.
-- **You want to write to the warehouse.** The default posture here is read-only; where a
-  statement would write, the skill says so and stops.
+- **Applying grants.** The setup skill shows the `CREATE` and `GRANT` statements; someone with
+  the rights runs them.
+- **Writing to the warehouse.** The agent role is read-only. Before any non-`SELECT` statement,
+  the querying skill stops and shows it to you.
+- **Data modelling**, clustering strategy and ELT.
 
 ## Prerequisites
 
-A Snowflake account you can already log into, and a client — the Snowflake CLI, a driver,
-or an MCP server — on the machine running Claude Code. The setup skill covers finding your
-account identifier, choosing an auth method and creating a read-only role; it assumes
-someone with the appropriate rights runs the statements that need them.
+- A Snowflake account, and someone who can create a role, a service user and a warehouse.
+- For the MCP path: a Snowflake-managed MCP server object in your account, and a PAT for the
+  service user generated in Snowsight.
+- For the CLI path: the Snowflake CLI (`snow`) and `openssl` on the machine running Claude Code.
 
 ## Install
 
@@ -60,51 +55,65 @@ someone with the appropriate rights runs the statements that need them.
 /plugin install snowflake-connector@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
-claude.ai account and Claude Code loads it automatically as a synced plugin.
+Claude Code asks for `snowflake_mcp_url` and `snowflake_pat` when you enable the plugin. You can
+change `snowflake_mcp_url` later in `/config`. `snowflake_pat` is a sensitive field and does not
+appear in `/config`; to replace it, disable and re-enable the plugin in `/plugin` to get the
+prompt again (unverified). Start a new session so the server connects.
+
+**Cowork / web:** enable the plugin for your claude.ai account. Whether Cowork prompts for plugin
+settings is not documented; if it does not, add the same MCP server URL as a claude.ai custom
+connector.
 
 ## What's inside
 
 | Name | Type | Purpose | Available |
 |------|------|---------|-----------|
-| `snowflake-setup` | Skill | Find your account identifier, choose between key-pair / OAuth / SSO, create and grant a read-only role and its own small warehouse, then verify auth, identity, metadata and a real read as four separate steps | both |
-| `snowflake-querying` | Skill | Bound every query by time and row count, size and suspend the warehouse as a spend control, avoid the expensive query shapes, and read a query profile for pruning, spilling and exploding joins | both |
+| `snowflake-setup` | Skill | Account identifier, service user, read-only role and warehouse, then the MCP server or the `snow` CLI, verified one layer at a time | both |
+| `snowflake-querying` | Skill | Bounded queries, `EXPLAIN` before expensive runs, result-cache and warehouse cost behaviour, query profiles, cancelling a runaway query | both |
+| `snowflake` | MCP server (remote HTTP) | Snowflake-managed MCP server, configured through plugin settings | Claude Code |
 
-Everything listed as a Skill loads on both surfaces. You can call one by name in Claude
-Code, or just describe what you want on either surface and let it trigger itself.
+Both skills load on either surface. Running anything against Snowflake needs either the MCP
+server or a shell with the `snow` CLI. Without them, the skills hand you the SQL and steps to run
+yourself, and work from the output you paste back.
 
-**These skills are fully readable on both surfaces, but only executable on one.** Every
-step they describe — `snow connection test`, a `GRANT`, a verification `SELECT`, reading a
-query profile — needs a shell, a client and live Snowflake credentials, and Cowork has
-none of those. The wizard, the trade-off tables and the query checklists are text and work
-anywhere; actually connecting to an account means Claude Code.
+Tool names from the server have the form `mcp__plugin_snowflake-connector_snowflake__<tool>`;
+copy the exact names from `/mcp` before writing permission rules or hooks for them.
 
-### No `.mcp.json`, on purpose
+## Security notes
 
-This plugin ships no MCP server configuration. A committed one would either carry a real
-account identifier, client id and role — which must never be published — or carry
-placeholders that register a server guaranteed to fail at startup and look like a broken
-plugin. The setup skill tells you what a client configuration needs instead, and points you
-at your server's own documentation for the exact field names and endpoint shape. Four lines
-of configuration written knowingly beats a file that is wrong by construction.
+- Steps that prompt for a passphrase (openssl, an interactive `snow connection add`) are run by
+  you in your own terminal, never through Claude's shell.
+- Private keys live under `~/.snowflake/keys/`, created with `umask 077`. The key passphrase is
+  supplied through `PRIVATE_KEY_PASSPHRASE` from your keychain, not stored in the connection file.
+- The PAT is generated in Snowsight and entered only in the plugin's enable-time prompt. It never
+  goes through the chat.
+- `PRIVATE_KEY_PASSPHRASE` is in the environment of every command Claude runs, so any of them
+  could read it.
+- With `dev-guardrails` installed, its Bash hook blocks the common ways of printing a secret into
+  the transcript: `cat`, `grep` and similar on `connections.toml`, `~/.snowflake/config.toml` or a
+  `*.p8` key; `openssl` writing a private key to stdout; and `echo` or `printenv` of the
+  passphrase variable. It is best-effort: an interpreter such as `python3 -c` can still read
+  these files.
 
 ## Layout
 
 ```
 snowflake-connector/
-├── .claude-plugin/plugin.json              # manifest (name, version, description, dependencies)
-├── SKILL.md                                # plugin entry point; scope and the bring-your-own-account rule
+├── .claude-plugin/plugin.json          # manifest, including the userConfig settings
+├── .mcp.json                           # the `snowflake` remote MCP server
 ├── skills/
-│   ├── snowflake-setup/SKILL.md            # account identifier, auth method, role, warehouse, verification
-│   └── snowflake-querying/SKILL.md         # bounded queries, warehouse cost controls, query profiles
+│   ├── snowflake-setup/
+│   │   ├── SKILL.md                    # identity, role, warehouse, MCP or CLI, verification
+│   │   └── references/troubleshooting.md
+│   └── snowflake-querying/SKILL.md     # bounded queries, cost controls, profiles
 └── README.md
 ```
 
 ## Dependencies
 
-- `dev-standards` — in particular `secrets-management`, which owns where a private key,
-  client secret or connection file is allowed to live and what happens when one is
-  exposed.
+- `dev-standards`: `secrets-management` sets the general rules for keeping secret values out of
+  source, logs and chat, and for rotating a secret once it has been exposed. The Snowflake-specific
+  storage steps are in `snowflake-setup`.
 
 ## License
 

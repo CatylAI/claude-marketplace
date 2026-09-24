@@ -1,23 +1,18 @@
-// Ordering invariant: an advisory style check must never suppress a credential gate.
+// Ordering invariant: nothing advisory may pre-empt a credential gate.
 //
-// `warn()` is `never`-typed and calls process.exit(1). Any advisory emitted ABOVE the
-// credential checks therefore returns from the hook in front of every security gate: a
-// `.sh` file carrying BOTH a hardcoded shebang AND a live key would exit 1 with a style
-// nit and the key would be written to disk, to git history, and to every clone. A style
-// nit outranking a security gate purely by source ordering is the failure this pins.
+// History: `warn()` exited 1 with a shebang nit, and when it sat above the credential
+// checks a `.sh` file carrying BOTH a hardcoded shebang AND a live key was written. The
+// advisory has since left this hook entirely (exit 1 reached only the user; the nit now
+// goes to Claude from post-write-edit via additionalContext), so the invariant is kept by
+// construction. These tests stay to pin it: a shebang must neither suppress a block nor
+// produce any output of its own here.
 //
 // It has to be end to end. The ordering lives in main()'s control flow, not in any pure
-// function, so importing a helper cannot see it. These tests spawn the real hook with a
-// real stdin payload and assert on the real exit code.
+// function, so these tests spawn the real hook with a real stdin payload.
 //
 // Every fake credential below is BUILT AT RUNTIME by concatenation. A contiguous literal
 // would be matched by the very gate under test when this file is written, and by the
-// secret scanners in CI. Concatenation keeps the shape out of the bytes on disk.
-//
-// This file is deliberately separate from pre-write-edit.test.ts. That suite tests the
-// two decision functions; this one tests only the order in which main() calls them, and
-// keeping the invariant in a file named after it means a future reorder has to delete a
-// file whose name says what it protects.
+// secret scanners in CI.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,12 +78,12 @@ describe('pre-write-edit ordering: a style warning cannot suppress a credential 
     assert.match(r.stderr, /github-token/);
   });
 
-  it('still WARNS on a hardcoded shebang when there is no credential', () => {
-    // The advisory must survive being moved below the blocks, not be quietly dropped.
-    // Deleting the warning would also make every "BLOCK not WARN" assertion above pass.
+  it('ALLOWS a hardcoded shebang with no credential, and says nothing', () => {
+    // The portability note is post-write-edit's job now; an exit 1 here reached only the
+    // user as a "hook error" and never Claude.
     const r = runHook('clean.sh', HARDCODED + 'set -euo pipefail\necho hello\n');
-    assert.equal(r.code, EXIT_WARN, `expected a WARN, got ${r.code}: ${r.stderr}`);
-    assert.match(r.stderr, /SHEBANG/);
+    assert.equal(r.code, EXIT_ALLOW, `expected ALLOW, got ${r.code}: ${r.stderr}`);
+    assert.equal(r.stderr, '');
   });
 
   it('ALLOWS a clean script with a portable shebang', () => {
@@ -111,10 +106,9 @@ describe('pre-write-edit ordering: a style warning cannot suppress a credential 
     // The other half of the invariant, and the reason the canonical published AWS example
     // key id cannot be used as a BLOCK fixture anywhere in this suite: findSecrets() treats
     // any value containing a placeholder word as documentation. A script that documents the
-    // shape of a key is a style warning and nothing more.
+    // shape of a key is allowed.
     const placeholder = 'AKIA' + 'IOSFODNN7EXAMPLE';
     const r = runHook('docs-snippet.sh', HARDCODED + `AWS_ACCESS_KEY_ID=${placeholder}\n`);
-    assert.equal(r.code, EXIT_WARN, `expected a WARN, got ${r.code}: ${r.stderr}`);
-    assert.match(r.stderr, /SHEBANG/);
+    assert.equal(r.code, EXIT_ALLOW, `expected ALLOW, got ${r.code}: ${r.stderr}`);
   });
 });

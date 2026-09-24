@@ -1,280 +1,149 @@
 ---
 name: mr-lifecycle
-description: "Drive a GitLab merge request end to end with the glab CLI: open one from the current branch (including when it has no upstream), read its state and approval rules without polling in a loop, watch the pipeline with glab ci status and trace the job that failed, fetch and reply to inline discussions thread by thread, flip a draft to ready, and merge with the strategy the project actually permits. Use when a branch is ready for an MR, when a pipeline is red, when review feedback needs addressing, or when an MR is ready to land. Every command here is literal and copy-pasteable. NOT a reviewer — it moves an MR through its states, it does not judge the diff."
+description: "Takes a GitLab merge request from open to merged with glab, following project policy. Use when opening an MR, fixing its pipeline, answering discussions, rebasing or merging. Not for posting a code review (use review-transport); not for pipeline YAML (use gitlab-ci-authoring)."
+when_to_use: "open a merge request, why is my pipeline failing, wait for CI on GitLab, address MR comments, resolve MR discussions, mark MR ready, rebase the MR, merge this MR"
+allowed-tools: Bash(glab auth status), Bash(glab repo view *), Bash(glab mr view *), Bash(glab ci status *), Bash(glab ci get *), Bash(glab ci trace *), Bash(git status *), Bash(git branch --show-current), Read, Grep, Glob
 license: MIT
-when_to_use: "open a merge request, glab mr create, push a branch and open an MR, check MR status, why is my pipeline failing, glab ci status, wait for CI on GitLab, address review comments on an MR, resolve MR discussions, mark MR ready for review, squash merge on GitLab, how should I merge this MR, approve a merge request"
-allowed-tools: Bash(glab:*), Bash(git:*), Bash(jq:*), Bash(sed:*), Read, Grep, Glob
 ---
 
 # mr-lifecycle
 
-A merge request is a state machine: unopened, draft, open with a red pipeline, open with unresolved
-discussions, mergeable, merged. Each state has one correct next command. This skill is those
-commands, literally.
+A merge request moves through a few states: unopened, draft, pipeline red, discussions open,
+mergeable, merged. Each section below is the next command for one state. Merge method, approval
+rules and protected branches belong to the project, so read them rather than assuming.
 
-Nothing here guesses at project policy. Merge method, approval rules and protected-branch settings
-are properties of the project, and every one of them is readable — so read it rather than assuming.
+Run `glab auth status` first; an auth failure otherwise surfaces as a confusing 404. Outside a
+checkout, add `--repo <group>/<project>` to every `glab mr` and `glab ci` call. `glab api` has no
+`--repo`: in its paths, `:id` is the checkout's project, and another project is written URL-encoded
+(`projects/<group>%2F<project>/...`). Write the MR's IID (the `!123` number, not the global id)
+literally into each command, because shell variables do not survive between Bash calls.
 
-## Preconditions
-
-```bash
-glab auth status
-```
-
-If that is not clean, stop. Every command below fails in a way that looks like a different problem
-when authentication is the actual one. Outside a checkout, or when `origin` is ambiguous, add
-`--repo <group>/<project>` to every `glab mr` and `glab ci` call.
-
-Two notes on `glab` that save an hour each:
-
-- `glab api` has **no** `--repo` flag. The project is part of the path: `projects/:id/...` uses the
-  checkout's remote, and an explicit project is URL-encoded — `projects/<group>%2F<project>/...`.
-- GitLab has two numbers per merge request. The **IID** is the per-project one in the URL
-  (`!123`); the **id** is global. Every `glab mr` command and every `merge_requests/<n>` path wants
-  the IID.
-
-## Opening a merge request
-
-Establish where you are first. An MR opened against the wrong target branch is a nuisance to fix
-afterwards.
+## Open
 
 ```bash
-git branch --show-current
-git status --short
-glab repo view --output json | jq -r '.default_branch'
+glab repo view --output json --jq '.default_branch'   # the target; do not assume main
+git push --set-upstream origin HEAD
 ```
 
-`glab mr create` will push the branch for you with `--push`, but doing it yourself keeps the failure
-modes separate:
+If the project has a template in `.gitlab/merge_request_templates/`, pass `--template <name>`.
+Otherwise the description says what changed and why, plus how it was verified. Write it to a file,
+which avoids quoting trouble:
 
 ```bash
-git push --set-upstream origin "$(git branch --show-current)"
+glab mr create --target-branch <default-branch> --title "<issue key>: <what changed>" \
+  --description-file <path> --remove-source-branch --yes
 ```
 
-Then open the MR. The title carries the issue key the branch name encodes; the description says what
-changed and why, because the diff already says how.
+`--yes` skips the confirmation prompt, which otherwise waits forever without a terminal. If the
+branch name starts with an issue key (`PROJ-123-...`), put that key at the start of the title;
+otherwise write a plain title and do not make up a key. Add `--draft` when the work is incomplete;
+`glab mr update <iid> --ready` flips it later (and `--draft` flips it back).
+
+## Read state
 
 ```bash
-glab mr create \
-  --target-branch main \
-  --title "PROJ-123: rotate the token cache on tenant change" \
-  --description "$(cat <<'BODY'
-## What changed
-
-The token cache key now includes the tenant id, and the cache is cleared on tenant switch.
-
-## Why
-
-Two tenants sharing one process could observe each other's cached tokens. Keying by tenant alone
-fixes the collision; clearing on switch fixes the window between switch and first miss.
-
-## Verification
-
-- Added `test_cache_is_scoped_per_tenant`, which fails on the previous implementation.
-- Existing suite green.
-
-Refs PROJ-123
-BODY
-)" \
-  --remove-source-branch \
-  --yes
+glab mr view <iid> --output json --jq '{state, draft, detailed_merge_status, has_conflicts, sha, web_url}'
+glab api "projects/:id/merge_requests/<iid>/approvals" --jq '{approved, approvals_left, user_can_approve}'
 ```
 
-`--yes` skips the confirmation prompt, which is what makes this non-interactive. Without it the
-command blocks forever in a non-TTY session and looks like a hang.
+`detailed_merge_status` answers "why is the merge button not green" in one string: `mergeable`,
+`not_approved`, `ci_still_running`, `ci_must_pass`, `discussions_not_resolved`, `conflict`,
+`need_rebase`, `draft_status`, among others. `sha` is the head commit, which the merge pins below.
 
-To derive the title's issue key from a branch named `PROJ-123-rotate-token-cache`:
+## Wait on the pipeline
+
+Use glab's blocking form rather than a sleep loop, and run it with the Bash tool's
+`run_in_background: true`, since a pipeline usually outlasts the tool's timeout:
 
 ```bash
-git branch --show-current | sed -n 's/^\([A-Z][A-Z0-9]*-[0-9]*\).*/\1/p'
+glab ci status --wait
 ```
 
-An empty result means the branch does not encode a key — write a plain descriptive title rather than
-inventing one.
-
-Open it as a draft when CI has not run yet or the work is deliberately incomplete:
+When it ends red, read the failing job before changing anything:
 
 ```bash
-glab mr create --draft --target-branch main --title "PROJ-123: rotate the token cache" \
-  --description "Work in progress." --yes
-
-glab mr update <iid> --ready   # flip it to ready when it is
-glab mr update <iid> --draft   # push it back to draft
+glab ci get --merge-request <iid> --status failed --with-job-details
+glab ci trace <job-id>
 ```
 
-GitLab also treats a title prefixed `Draft:` as a draft. `glab mr update --ready` rewrites the title
-for you; editing the title by hand to remove the prefix does the same thing and is easy to get
-subtly wrong, so prefer the flag.
+Pass `glab ci trace` a job id; without one it opens an interactive picker that hangs without a
+terminal. Reproduce the failure locally before pushing a guess, because each attempt costs a
+pipeline. Retry (`glab ci retry <job-id>`) only when you have a reason to think the job was flaky,
+and state that reason. A `manual` job is waiting, not failing; `glab ci trigger <job-id>` starts it.
+A pipeline that never appeared is a `rules:` or YAML problem: see `gitlab-ci-authoring`.
 
-## Reading state
-
-One command per question, each returning JSON you can act on. None of these mutate anything.
+## Address review feedback
 
 ```bash
-# The whole picture for the current branch's MR
-glab mr view --output json | jq '{iid, title, state, draft, detailed_merge_status, has_conflicts, web_url}'
-
-# Just the IID, for the API calls further down
-MR_IID="$(glab mr view --output json | jq -r '.iid')"
-
-# Approvals: who has approved, how many are still required
-glab api "projects/:id/merge_requests/$MR_IID/approvals" | jq '{approved, approvals_required, approvals_left, approved_by: [.approved_by[].user.username]}'
-
-# The approval rules the project enforces, which is where "approvals_left: 1" comes from
-glab api "projects/:id/merge_requests/$MR_IID/approval_rules" | jq '[.[] | {name, approvals_required}]'
+glab mr view <iid> --unresolved
+glab api "projects/:id/merge_requests/<iid>/discussions" --paginate \
+  | jq -s 'flatten(1) | map(select(.notes[0].resolvable and (.notes[0].resolved | not))
+      | {id, path: .notes[0].position.new_path, line: .notes[0].position.new_line,
+         author: .notes[0].author.username, body: .notes[0].body})'
 ```
 
-`detailed_merge_status` is the field worth reading: `mergeable`, `not_approved`,
-`ci_still_running`, `discussions_not_resolved`, `conflict`, `draft_status`. It answers "why is the
-merge button not green" in one string, which `state` and `has_conflicts` together do not.
-
-## Watching the pipeline
-
-Do not poll in a tight loop. `glab` has a blocking form:
+Reply in the discussion's own thread, so the answer stays attached to the line, then resolve the
+ones you addressed once the fix is pushed:
 
 ```bash
-glab ci status --live          # follows the current branch's pipeline until it ends
-glab ci status --compact       # a one-shot condensed view
-glab ci status --branch main   # another branch. There is NO --ref flag; --branch is the spelling
+glab mr note create <iid> --reply <discussion-id> -m 'Fixed in <sha>: <one line on what changed>.'
+glab mr note resolve <iid> <discussion-id>
 ```
 
-When it ends red, get the failure before doing anything else:
+`glab mr note resolve` is marked experimental. If it is missing or fails, the API does the same:
+`glab api --method PUT "projects/:id/merge_requests/<iid>/discussions/<discussion-id>" -f resolved=true`.
 
-```bash
-glab ci list --status failed
-glab ci trace <job-id-or-name>        # streams that job's log
-glab ci trace --branch "$(git branch --show-current)"   # pick a job interactively
-```
+If you disagree with a note, reply with your reason and leave the discussion open for its author.
+Leave code you believe is correct as it is. A push alone does not re-request review:
+`glab mr update <iid> --reviewer +<username>` adds one (without `+`, the list is replaced).
 
-`glab ci trace lint` takes a job *name*, which is usually easier than hunting the id. Triage in this
-order:
-
-1. **Reproduce locally.** A test that fails in CI and passes locally is usually an environment or
-   ordering difference, and chasing it in CI costs a push per attempt.
-2. **Read the failing job's log, not the pipeline summary.** The summary says which job; the log
-   says why.
-3. **Retry only if you have reason to believe it is flaky**, and say so:
-   `glab ci retry <job-id-or-name>`. A retry without a hypothesis is how a real failure gets merged.
-
-A job that is `manual` is not a failure — it is waiting. `glab ci trigger <job-name>` starts one.
-
-## Addressing review feedback
-
-Inline notes live in discussions and do not come back from `glab mr view`. Read them from the API:
-
-```bash
-MR_IID="$(glab mr view --output json | jq -r '.iid')"
-
-# Every discussion, with the note ids and whether it is resolved
-glab api "projects/:id/merge_requests/$MR_IID/discussions" --paginate \
-  | jq '[.[] | {id, resolved: (.notes[0].resolved // false),
-                path: (.notes[0].position.new_path // null),
-                line: (.notes[0].position.new_line // null),
-                author: .notes[0].author.username,
-                body: .notes[0].body}]'
-
-# Only the ones still open
-glab mr view --unresolved
-```
-
-Work each discussion, then reply **in that thread** so the conversation stays attached to the line.
-A reply is a new note on an existing discussion:
-
-```bash
-glab api --method POST \
-  "projects/:id/merge_requests/$MR_IID/discussions/<discussion-id>/notes" \
-  --raw-field body='Fixed in 4f2a1c9 — the cache key now includes the tenant id.'
-```
-
-Resolve it only once the fix is pushed:
-
-```bash
-glab api --method PUT \
-  "projects/:id/merge_requests/$MR_IID/discussions/<discussion-id>" \
-  --raw-field resolved=true
-```
-
-Push the fixes, then say so once at the MR level rather than per discussion:
-
-```bash
-git push
-glab mr note create --message 'Pushed fixes for all four discussions; each thread has the commit that addresses it.'
-```
-
-Ask for the re-review explicitly — a push alone does not re-request one:
-
-```bash
-glab mr update <iid> --reviewer '+<username>'
-```
-
-The `+` prefix **adds** a reviewer. Without it, `--reviewer` replaces the whole list, which silently
-drops everyone else who was already reviewing.
-
-Disagreeing with a note is a legitimate outcome. Reply with the reason in the thread and leave it
-unresolved for the author of the note to close; do not resolve your own disagreement, and do not
-change code you believe is correct to clear a thread.
-
-## Approving
-
-```bash
-glab mr approve <iid>     # add your approval
-glab mr revoke <iid>      # remove it
-```
-
-Approving your own MR is usually blocked by project settings rather than by the CLI, so a failure
-here is a policy answer, not an error. Read the rules before assuming otherwise:
-
-```bash
-glab api "projects/:id/merge_requests/<iid>/approvals" | jq '{approvals_required, approvals_left}'
-```
-
-## Merging
-
-The project decides which strategies exist. Read it, do not assume:
-
-```bash
-glab repo view --output json | jq '{merge_method, squash_option, only_allow_merge_if_pipeline_succeeds, only_allow_merge_if_all_discussions_are_resolved}'
-```
-
-`merge_method` is one of `merge` (merge commit), `rebase_merge` (merge commit with semi-linear
-history) or `ff` (fast-forward only). A fast-forward-only project rejects a merge whose source is
-behind the target, and the message reads like a permissions problem — rebase first:
+## Rebase
 
 ```bash
 glab mr rebase <iid>
 ```
 
-Then merge:
+The rebase runs on the server. glab waits until GitLab reports it finished and exits non-zero with
+GitLab's message when it fails, a conflict included. The branch was rewritten remotely, so bring
+your local copy in line with `git pull --rebase` before committing again.
+`dev-guardrails:session-sync` relies on this behaviour.
+
+## Merge
+
+Merging is outward-facing and hard to undo. Show the user the state below and get an explicit yes
+first.
 
 ```bash
-# Merge now, deleting the source branch afterwards
-glab mr merge <iid> --squash --remove-source-branch --auto-merge=false --yes
-
-# Or leave auto-merge on (the default when a pipeline is running): merges when the pipeline passes
-glab mr merge <iid> --squash --remove-source-branch --yes
+glab repo view --output json --jq '{merge_method, squash_option, only_allow_merge_if_pipeline_succeeds, only_allow_merge_if_all_discussions_are_resolved}'
+glab mr view <iid> --output json --jq '{detailed_merge_status, sha}'
 ```
 
-**`glab mr merge` enables auto-merge by default when a pipeline is running.** That is the opposite
-of the `gh` default and is the single easiest thing to get wrong when porting a habit from GitHub:
-the command returns 0, nothing has merged yet, and the merge happens minutes later without anyone
-watching. Pass `--auto-merge=false` when you mean *now*, and mean auto-merge when you leave it on.
-
-Merge only a reviewed commit by pinning the SHA — if someone pushes between your read and your
-merge, the merge fails instead of landing code nobody looked at:
+Merge only when `detailed_merge_status` is `mergeable`. `merge_method` is `merge`, `rebase_merge`
+or `ff`; the last two reject a source branch that is behind, with an error that reads like a
+permissions problem, so rebase first. Pass `--squash` only when `squash_option` allows it. Pin the
+`sha` you checked, so a push between the check and the merge makes the merge fail instead of
+shipping unreviewed code:
 
 ```bash
-glab mr merge <iid> --squash --sha "$(git rev-parse HEAD)" --yes
+glab mr merge <iid> --sha <sha> --remove-source-branch --auto-merge=false --yes
 ```
 
-Confirm the landing rather than assuming the command that returned 0 did what you meant:
+`glab mr merge` turns on auto-merge by default, so without `--auto-merge=false` a running pipeline
+makes the command return 0 with nothing merged yet. Leave auto-merge on only when the user asks for
+it and the MR is already approved.
+
+## Verify
 
 ```bash
-glab mr view <iid> --output json | jq '{state, merged_at, merge_commit_sha, squash_commit_sha}'
+glab mr view <iid> --output json --jq '{state, merged_at, merge_commit_sha, squash_commit_sha}'
 ```
 
-A `state` of `opened` with `detailed_merge_status: "ci_still_running"` after a `merge` that returned
-0 means auto-merge is armed, not that the merge failed.
+`state` should be `merged`. `opened` with `detailed_merge_status: "ci_still_running"` means
+auto-merge is armed, not that the merge failed. A command that exits 0 is not proof that the MR
+landed.
 
-## Surface
+## Without glab
 
-Claude Code only. Every command above needs a shell and a checkout; neither exists in Cowork.
+On the web, or anywhere without a shell, use a GitLab MCP server if one is connected, following the
+same steps and the same confirmation before merging. Otherwise work from what the user pastes (the
+MR page, a job log) and give them the commands above to run.

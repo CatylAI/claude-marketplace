@@ -1,30 +1,32 @@
 ---
 name: terraform-standards
+description: "Sets house conventions for Terraform on AWS: module layout, typed variables, S3 backend with native locking, per-environment backends, pinning. Use when scaffolding a Terraform project, adding a backend or pinning versions. Not for plan review (use terraform-review) or IAM (use aws-iam-boundaries)."
 license: MIT
-description: "Module layout, variable and output conventions, S3 state backend configuration with locking, workspaces versus a directory per environment, provider version pinning, and fmt/validate/plan discipline for Terraform on AWS. Use when scaffolding a new Terraform project, adding a backend, deciding how environments are separated, or working out why a plan is doing something unexpected."
 ---
 
 # Terraform Standards
 
-## Module layout
+Every account id, bucket, key alias and role on this page is a placeholder (`111111111111`,
+`<org>`, `<team>`). A wrong backend value does not error; it writes state somewhere else, so
+copy real values from a project known to work, never from an example.
 
-A Terraform repository has two kinds of directory, and conflating them is the most common
-structural mistake.
+Without a checkout (web), apply these conventions to the HCL or backend files the user pastes.
+
+## Module layout
 
 | Kind | Contains | Has a backend? | Named |
 | --- | --- | --- | --- |
 | **Root module** | The composition for one environment of one component. Calls child modules, supplies environment values. | Yes — exactly one state file. | `infrastructure/terraform/`, or `environments/<env>/` |
-| **Child module** | Reusable resource logic with no environment knowledge. | No. Never. | `modules/<name>/` |
+| **Child module** | Reusable resource logic with no environment knowledge. | No. | `modules/<name>/` |
 
-A child module that reads an environment name and switches behaviour on it is a root
-module wearing the wrong hat. Pass the behaviour in as a variable instead; the caller knows
-which environment it is, the module does not need to.
+A child module that switches behaviour on an environment name is a root module wearing the
+wrong hat. Pass the behaviour in as a variable; the caller knows which environment it is.
 
 Inside a root module, split by file so a reader can find things without grep:
 
 ```
 infrastructure/terraform/
-├── versions.tf      # terraform { required_version, required_providers }
+├── versions.tf      # terraform { required_version, required_providers, backend "s3" {} }
 ├── providers.tf     # provider blocks, default_tags
 ├── variables.tf     # every input, typed and described
 ├── locals.tf        # derived names and tag maps
@@ -33,27 +35,24 @@ infrastructure/terraform/
 └── backends/
     ├── dev.s3.tfbackend
     ├── staging.s3.tfbackend
-    └── prod.s3.tfbackend
+    └── production.s3.tfbackend
 ```
 
-One state file per component per environment. The temptation to put the whole estate in one
-root module is strong early and fatal later: every plan touches everything, every apply
-holds one lock, and a typo in an unrelated resource blocks the change you actually need.
+One state file per component per environment. A whole estate in one root module means every
+plan touches everything, every apply holds one lock, and a typo in an unrelated resource
+blocks the change you need.
 
 ## Variables
 
-- **Type every variable.** `type = string` at minimum; `object({...})` for structured
-  input. `any` is an admission that nobody knows the shape yet, and it defers the error
-  from plan time to apply time.
-- **Describe every variable.** The description is what a reader sees in `terraform
-  console`, in generated docs, and in the error when validation fails.
-- **No default on anything that distinguishes environments.** `environment`,
-  `account_id`, `vpc_id` and sizing knobs must be supplied. A default on `environment`
-  means a forgotten `-var-file` silently plans against the wrong one — and it plans
-  cleanly, which is the problem.
-- **Defaults are fine on things that are genuinely optional** — a retention period, an
-  `enable_x` flag that is off, a tag map that starts empty.
-- **Use `validation` blocks for the constraints you would otherwise write in a comment.**
+- **Type and describe every variable.** `any` defers the shape error from plan time to apply
+  time. tflint's default ruleset already fails an untyped variable; `terraform_documented_variables`
+  is off by default, so enable it in the repo's `.tflint.hcl`.
+- **No default on anything that distinguishes environments** (`environment`, `account_id`,
+  `vpc_id`, sizing). A default on `environment` means a forgotten `-var-file` plans cleanly
+  against the wrong one.
+- **Defaults are fine on genuinely optional inputs** — a retention period, an `enable_x` flag
+  that is off, an empty tag map.
+- **Use `validation` blocks for constraints you would otherwise write in a comment.**
 
 ```hcl
 variable "environment" {
@@ -65,42 +64,32 @@ variable "environment" {
     error_message = "environment must be one of: dev, staging, production."
   }
 }
-
-variable "name_prefix" {
-  type        = string
-  description = "Prefix for every resource name in this stack, e.g. <org>-billing-api."
-}
 ```
 
-Mark secrets `sensitive = true`, and do not pass real secret values through `tfvars` at
-all — read them from the parameter store or secrets manager with a data source. See
-`dev-standards` → `secrets-management` for the path conventions.
+Secrets: mark them `sensitive = true` and keep real values out of `tfvars`. Anything a data
+source reads lands in state; where the provider offers them, prefer write-only arguments
+(for example `password_wo`) fed from an ephemeral resource, which are never persisted. Each
+pairs with a version argument (`password_wo_version`): Terraform cannot diff a value it never
+stored, so bump the version to push a new one. Path
+conventions and the state caveat are owned by `dev-standards:secrets-management`.
 
 ## Outputs
 
-An output is an API. Everything you export, something else can come to depend on, and you
-will not find out which until you try to remove it.
+An output is an API: anything you export, something else can come to depend on.
 
-- Export only what another stack or a human genuinely consumes. Not "everything, just in
-  case."
-- `description` on every output, same reason as variables.
-- `sensitive = true` on anything that would otherwise print in CI logs. Note what this
-  does and does not do: it redacts the CLI output. **The value is still in state in
-  plaintext.** State is a secret-bearing artifact regardless.
-- Prefer publishing cross-stack values to a parameter store over having the consuming
-  stack read your remote state. A remote state read couples the consumer to your internal
-  resource names and grants it read access to every other value in your state file. A
-  parameter is one value with its own access control.
+- Export only what another stack or a human consumes, each with a `description`.
+- `sensitive = true` redacts CLI output only; the value is still in state.
+- Prefer publishing cross-stack values to a parameter store over having consumers read your
+  remote state. A remote state read couples the consumer to your resource names and grants it
+  every other value in your state file.
 
 ## State backend
 
-### The shape
-
-State lives in S3, encrypted with a customer-managed KMS key, with locking enabled, and
-the bucket is versioned. Every value below is a placeholder:
+State lives in S3: a private, versioned bucket, SSE-KMS with a customer-managed key, and
+S3-native locking. Bucket versioning is the only undo for a corrupt or truncated state write.
 
 ```hcl
-# backends/dev.s3.tfbackend — supplied at init, not committed into the backend block
+# backends/dev.s3.tfbackend
 region       = "us-east-1"
 bucket       = "<org>-tfstate-dev"
 key          = "<org>/aws/<team>/dev/<project-name>/backend.tfstate"
@@ -113,181 +102,131 @@ assume_role = {
 }
 ```
 
-with the backend block itself left partial in `versions.tf`:
-
-```hcl
-terraform {
-  backend "s3" {}
-}
-```
-
-and initialised per environment:
+The backend block in `versions.tf` stays partial (`backend "s3" {}`), and each environment
+initialises with its own file:
 
 ```
-terraform init -reconfigure -backend-config=backends/dev.s3.tfbackend
+terraform init -input=false -reconfigure -backend-config=backends/dev.s3.tfbackend
 ```
 
-### Why partial, and why it matters
-
-`terraform init` with no `-backend-config` against a partial backend block does not fail.
-It falls back to **local state**, writes `terraform.tfstate` next to your `.tf` files, and
-proceeds to plan a complete greenfield estate because as far as it knows nothing exists
-yet. The resulting plan is a long list of creates for resources that are already running.
-
-That failure is quiet, and it is quiet in the direction of doing damage, so it deserves a
-mechanism rather than a note in a README: a pre-commit or pre-apply hook that refuses to
-run when a local `terraform.tfstate` exists in a directory whose backend block is partial.
-Two lines of shell, and it removes the whole class.
+- **`-input=false`**: `bucket` and `key` are required, so a missing `-backend-config` makes an
+  interactive `init` prompt for them. In CI and scripts, fail instead of prompting.
+- **`-reconfigure`** when switching environments in one working directory. Without it, `init`
+  stops with "Backend configuration changed" and suggests `-migrate-state`; following that hint
+  copies one environment's state into another's key.
+- **The real quiet failure is a wrong `key`, not a missing one.** A key that points at an empty
+  object gives you a plan that creates the whole environment again. A plan that is all
+  creates for an environment that already exists is a stop, not a review comment.
+- A root module with **no** `backend` block at all uses local state. `versions.tf` is where the
+  backend block lives, so it is the first file to copy when scaffolding.
 
 ### The key path is the only thing that varies per project
 
-Bucket, KMS alias, region and role are properties of the *environment*. The `key` is the
-property of the *project*. When scaffolding a new project, copy the three backend files
-from an existing one and change only the `key`. Do not derive a bucket name from a pattern
-you think you remember — read it from a project that is known to work, or from the
-platform team's documented value.
+Bucket, KMS alias, region and role are properties of the *environment*; the `key` belongs to
+the *project*. When scaffolding, copy the backend files from a working project and change only
+the `key`.
 
-Two conventions that pay for themselves, both learned the hard way:
-
-- **Use the full word in the key path.** If your environments are `dev` / `staging` /
-  `production`, do not let the key say `prod` in one project and `production` in another.
-  A key path mismatch creates a second, empty state file rather than an error.
-- **If the backend *file* is named `prod.s3.tfbackend` but the key inside says
-  `production`, write that down where someone scaffolding will see it.** Any place two
-  spellings of one environment coexist is a place a future reader will "fix" one of them.
+- **Spell each environment one way everywhere.** A key that says `prod` in one project and
+  `production` in another creates a second, empty state file, not an error. Name the backend
+  file with the same word the key uses.
 
 ### Locking
 
-Concurrent applies against one state file corrupt it. Terraform's S3 backend supports
-native locking via `use_lockfile = true`, which writes a lock object beside the state
-object; older setups use a DynamoDB table via `dynamodb_table`. Use one. Verify which your
-Terraform version supports before choosing — the native option is the newer of the two and
-the DynamoDB path is on its way out, so a mixed estate is worth normalising deliberately
-rather than per project.
+Use S3-native locking: `use_lockfile = true` writes a lock object beside the state. The
+`dynamodb_table` argument is deprecated and `init` warns when it is set. Keep it only while
+migrating an existing backend: with both set, Terraform takes both locks, so set
+`use_lockfile = true`, apply once from every pipeline that uses the state, then remove
+`dynamodb_table` and the table. Native locking needs a Terraform version that supports it;
+see [references/versions.md](references/versions.md).
 
-A lock that is never contended looks identical to no lock at all. The time you find out is
-the time two pipeline runs overlap, so treat "locking is configured" as something to check
-in review, not something to assume.
+A lock that is never contended looks identical to no lock at all, so check it in review.
 
 ### State is sensitive
 
-Every value your configuration touches — generated passwords, secret data source results,
-private IPs, full resource inventories — is in the state file in plaintext. Therefore:
-bucket is private and versioned, encryption uses a customer-managed key, and read access
-to the state bucket is granted with the same seriousness as read access to the secrets
-manager. Bucket versioning is not optional; it is the only undo you have for a corrupt or
-truncated state write.
+Everything the configuration touches is in state in plaintext. Grant read access to the state
+bucket and its KMS key as seriously as read access to the secrets store, and remember that a
+role that can *plan* can read state.
 
 ## Workspaces versus a directory per environment
 
-Use **separate backend configurations** — one per environment, as above. Do not use
-`terraform workspace` to separate dev from production.
+Use one backend file per environment, as above, not `terraform workspace`, to separate dev
+from production. Workspaces share one backend: one bucket, one KMS key and one assumed role.
 
-The argument is not stylistic. Workspaces share one backend, which means one bucket, one
-KMS key and one assumed role for every environment in the set. The consequences:
+- Anyone who can plan dev can read production state.
+- The selected workspace lives in the working directory (`.terraform/environment`) or in
+  `TF_WORKSPACE`, not in the command you typed; `terraform apply` is the same keystrokes for
+  either environment.
+- You cannot give the pipeline a production-only identity.
 
-- The production state and the dev state are protected by the same access control. Anyone
-  who can plan dev can read production state.
-- The current workspace is **session state in your shell**, not a property of the command
-  you typed. `terraform apply` is the same keystrokes whether you are pointed at dev or
-  production, and the only thing standing between them is a `select` you ran earlier.
-- You cannot give the pipeline a production-only identity, because the same backend
-  configuration must work for all of them. That takes the single best control off the
-  table.
+Workspaces fit **ephemeral copies of one environment** — a stack per feature branch or test
+run — where every copy has the same blast radius and the same credential.
 
-Directory-per-environment costs you some duplication in `backends/` and gains you the
-ability to say: this credential can reach dev, and it physically cannot reach production.
+## Version pinning
 
-Workspaces are genuinely useful for **ephemeral copies of the same environment** — a
-short-lived stack per feature branch, per test run, per reviewer — where every copy has the
-same blast radius and the same credential. That is the case they were designed for.
-
-## Provider and version pinning
-
-```hcl
-terraform {
-  required_version = "~> 1.9"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.70"
-    }
-  }
-}
-```
-
-- **Pin `required_version`.** A newer Terraform CLI can write a state file an older one
-  refuses to read; the first person to run the new version upgrades state for everyone.
-- **Constrain every provider**, including the ones you only use for a data source. An
-  unconstrained provider resolves to whatever was newest the day someone ran `init`, which
-  makes two engineers' plans differ for reasons neither can see.
-- **Commit `.terraform.lock.hcl`.** The constraint expresses intent; the lock file
-  expresses what is actually running. Without it, `~> 5.70` is a range, not a version.
-  Update it deliberately with `terraform init -upgrade`, in its own change, and read the
+- **Pin the exact Terraform CLI version in CI** (the setup action's version input, or a
+  `.terraform-version` file read by the version manager). A newer 1.x may write a state format
+  an older one cannot read; Terraform guarantees upgrades within 1.x, not downgrades. Upgrade
+  the pinned CLI deliberately, in its own change.
+- **`required_version`** states the oldest CLI the configuration works with. Set its floor to
+  the version that introduced the newest feature you use (native locking, `removed` blocks,
+  write-only arguments); it is a floor, not a pin.
+- **Constrain every provider** with `~>` in `required_providers`, including data-source-only
+  ones, and **commit `.terraform.lock.hcl`**: the constraint states intent, the lock file
+  records what runs. Update with `terraform init -upgrade` in its own change, and read the
   provider changelog for the resources you use.
-- Note that the review pipeline's `deps` detector reads package manifests — npm, pip,
-  Dockerfiles, workflow files — and **not** `.tf` provider constraints. Provider pinning is
-  caught by a `tflint` ruleset if you have configured one, and otherwise by a human. Do not
-  assume the scan has it covered.
+- tflint's default ruleset fails a missing `required_version` or provider constraint and an
+  unpinned module source, so the review scan catches their absence. Whether the chosen range is
+  sensible is still a human call.
+
+Current version floors and example constraints: [references/versions.md](references/versions.md).
 
 ## fmt, validate, plan
 
-Four commands, in this order, and each answers a different question:
-
 ```
-terraform fmt -recursive
-terraform init -backend-config=backends/dev.s3.tfbackend
+terraform fmt -check -recursive
+terraform init -input=false -backend=false
 terraform validate
-terraform plan -out=tfplan
+terraform init -input=false -reconfigure -backend-config=backends/dev.s3.tfbackend
+terraform plan -input=false -out=tfplan
 ```
 
 | Command | Answers | Needs credentials? |
 | --- | --- | --- |
 | `fmt -check` | Is it canonically formatted? | No |
-| `validate` | Is it internally consistent — types, references, required arguments? | No, but it needs `init` to have downloaded providers |
+| `validate` | Types, references, required arguments consistent? | No, after `init -backend=false` downloads providers |
 | `plan` | What would change in *this* state, right now? | Yes |
 
-`fmt` and `validate` belong in pre-commit, where they cost nothing and fail in under a
-second. `plan` does not belong in pre-commit: it needs credentials and a backend, and a
-hook that authenticates is a hook people disable.
+`fmt` and `validate` (with `init -backend=false`) belong in pre-commit. `plan` does not: it
+needs credentials and a backend, and a hook that authenticates is a hook people disable.
 
-Read the plan. All of it, including the `# forces replacement` comments and the summary
-line. A plan you skimmed is not a review, and `terraform-review` in this plugin is
-entirely about what to look for in one.
+The saved plan file contains every value in the plan, sensitive ones included, in plaintext.
+Treat `tfplan` like state: keep it out of git, and store it as a pipeline artifact with the
+same access control as the state bucket. Apply that same file, so what was reviewed is what
+runs. Reading a plan is `terraform-review`'s job.
 
-## Designing out the laptop apply
+## No applies to shared environments from a laptop
 
-The single highest-value structural decision in a Terraform estate: **make it impossible,
-not inadvisable, to apply to a shared environment from a personal machine.**
+Make it impossible, not merely discouraged. A local apply ships an unreviewed working tree,
+leaves no plan artifact, and attributes the change to a person's broad session. Enforce it in
+IAM:
 
-Why it has to be impossible rather than discouraged:
+1. Shared-environment backends assume a **state role that trusts only the pipeline identity**.
+   A personal session fails on `sts:AssumeRole` before any plan runs.
+2. Personal identities reach the sandbox only, where a bad apply costs a rebuild.
+3. Shared environments change through a **manual gate in the pipeline**: the saved plan is the
+   artifact, the gate is the approval, the job log is the audit trail.
+4. Read-only inspection of shared environments stays available, so nobody reaches for a
+   bigger role just to look.
 
-- **The working tree is unreviewed.** A local apply ships whatever is on disk — including
-  the debugging change you meant to delete — and nothing in the state file records that the
-  applied configuration never existed in a commit.
-- **There is no artifact.** Nobody else saw the plan. When the resource changes shape two
-  weeks later, the archaeology starts at "who was working that day".
-- **The identity is a person.** Audit logs attribute the change to a human session with
-  broad permissions rather than to a pipeline run with narrow ones, and that person's
-  laptop is now in the blast radius of the production estate.
-- **Drift is invisible until the next plan.** Local apply and pipeline apply race; the next
-  pipeline run proposes to undo the local change, and whoever reads that plan has no
-  context for why.
+## Verify
 
-The mechanism, expressed in IAM rather than in prose:
+After scaffolding or changing a backend, run and check:
 
-1. The shared-environment backends assume a **state role** that trusts only the pipeline's
-   identity. A personal SSO session that tries to assume it gets `AccessDenied` on
-   `sts:AssumeRole` — before any plan runs, so there is no partial state write to clean up.
-2. Local identities are scoped to the sandbox environment only, where the cost of a bad
-   apply is a rebuild.
-3. Shared environments are reached through a **manual gate in the pipeline**. The plan is
-   the artifact; the gate is the approval; the job log is the audit trail.
-4. Read-only inspection of shared environments stays available. Being unable to change
-   production is not the same as being unable to look at it, and taking away the second
-   only teaches people to reach for a bigger role.
+1. `terraform fmt -check -recursive` and `terraform validate` pass.
+2. `tflint` passes with the repo's config.
+3. `terraform plan` against an existing environment shows only the intended changes; all
+   creates means the `key` or backend file is wrong.
+4. `init` prints no deprecation warning for `dynamodb_table` once migration is done.
 
-The tell that you have got this right: when someone new runs `terraform plan` against
-production by mistake, it fails on credentials in three seconds, and the failure teaches
-them the rule.
+If you cannot run these (no CLI, no credentials, web session), say which checks remain and
+hand them to the user with the exact commands above.

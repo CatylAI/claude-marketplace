@@ -1,6 +1,6 @@
 ---
 name: agentic-loop-control
-description: "How an agent loop should terminate, continue, and fail: branching on stop_reason instead of on model prose, appending every tool result before the next request, choosing a managed loop over a hand-rolled one, using turn and budget caps as circuit breakers, retrying only with the specific error, and propagating failures as structured partial results. Use when writing or reviewing a Messages API loop, when an agent stops early or spins forever or repeats the same tool call, or when deciding how a tool failure should reach the caller. Not for subagent design or tool schema design."
+description: "Sets the control-flow rules for an agent loop: when it stops, when it continues, and how it fails. Use when writing or reviewing a Messages API loop, when an agent stops early, loops forever, or repeats the same tool call, or when deciding how a tool failure reaches the caller. Not for subagent design (use agent-orchestration); not for tool schemas or error payload shape (use tool-interface-design)."
 license: MIT
 ---
 
@@ -10,79 +10,87 @@ The loop is the one part of an agent that must be fully deterministic. Nearly ev
 traces to the same root cause: something the control flow should have decided was left to the
 model's prose instead.
 
-Loop correctness ranks above every other concern in an agent system. A perfectly described tool
-inside a loop that mis-detects completion is still a broken agent.
+Fix the loop before anything else. A perfectly described tool inside a loop that mis-detects
+completion is still a broken agent.
 
-## 1. Terminate on `stop_reason`, never on content
+SDK method names, Agent SDK result fields, and the full `stop_reason` reference are in
+[references/api-mechanics.md](references/api-mechanics.md). Porting notes for other frameworks are
+in [references/porting.md](references/porting.md).
+
+## 1. Decide completion from `stop_reason` alone
 
 `stop_reason` is the only completion signal the API gives you. Treat `end_turn` as finished and
-every other value as "not finished — find out why."
+every other value as "not finished; find out why."
 
 | `stop_reason` | What happened | What to do |
 | --- | --- | --- |
 | `end_turn` | Model finished on its own | Return. |
 | `tool_use` | The turn contains `tool_use` blocks | Execute, append results, iterate. |
-| `max_tokens` | Output truncated, possibly mid-`tool_use` with partial JSON | Raise the limit and retry, or repair the partial input. Never parse truncated tool input as if it were complete. |
-| `model_context_window_exceeded` | Context limit hit | Compact, trim, or escalate. Re-sending the same request cannot succeed. |
-| `pause_turn` | A long-running server-tool turn checkpointed | Re-send the paused assistant content verbatim to continue. No client `tool_use` block is left unanswered. |
-| `refusal` | Safety decline, with `stop_details` | Not retryable against the same model. Fall back or escalate. |
+| `max_tokens` | Output truncated, possibly mid-`tool_use` with partial JSON | Raise the limit and retry, or repair the partial input. Parse tool input only from a complete turn. |
+| `model_context_window_exceeded` | The response filled the context window | Treat as truncated; compact, trim, or escalate, because the same request cannot succeed. |
+| `pause_turn` | A server-tool loop checkpointed | Send the paused assistant content back verbatim to continue. |
+| `refusal` | Safety decline; `stop_details` names the category | Fall back to another model or escalate; the same request on the same model will refuse again. |
 | `stop_sequence` | A configured stop sequence matched | Handle per your own protocol. |
 
-The asymmetry that catches people: under structured output, both `refusal` and `max_tokens` can
-return a payload that violates your schema. Schema guarantees hold only for a turn that ended
-normally.
+Under structured output, `refusal` and `max_tokens` can both return a payload that violates your
+schema. Schema guarantees hold only for a turn that ended normally.
 
 ## 2. Append both halves of every tool exchange
 
-The Messages API is stateless — each request carries the whole conversation. A tool result that
-never makes it into `messages` is a result the model cannot reason about, and the symptom is an
-agent that calls the same tool over and over.
+The Messages API is stateless: each request carries the whole conversation. A tool result that
+never reaches `messages` is one the model cannot reason about, and the symptom is an agent that
+calls the same tool over and over.
 
 Append the assistant turn carrying the `tool_use` blocks **and** the user turn carrying one
-`tool_result` per `tool_use_id`, in order. Never one without the other.
+`tool_result` per `tool_use_id`, in order, before the next request.
 
 ## 3. Take the highest rung of the loop ladder that works
 
-1. **`client.beta.messages.tool_runner(...)`** — the SDK's own loop. Runs your tools, formats
-   results, iterates to `end_turn`. The default for ordinary agentic work.
-2. **Managed Agents** (server-hosted) — Anthropic runs the loop and a sandbox, persists event
-   history, streams results. For long-running autonomous work you would rather not host.
-3. **A hand-written `while` loop** — only when you need something the managed loop will not do:
+1. **The SDK's tool runner.** It runs your tools, formats results, and iterates until the model
+   stops calling tools. The default for ordinary agentic work.
+2. **A server-hosted managed agent.** Anthropic runs the loop and a sandbox and persists event
+   history. For long-running autonomous work you would rather not host.
+3. **A hand-written `while` loop.** Only when you need something the managed loop will not do:
    human approval gates, conditional execution, custom batching, per-iteration policy checks,
    bespoke telemetry.
 
-Writing rung 3 when rung 1 would do is the most common piece of avoidable agent code, and it is
-where rules 1 and 2 get broken.
+Hand-writing rung 3 when rung 1 would do is the most common piece of avoidable agent code, and it
+is where rules 1 and 2 get broken.
 
 ## 4. Caps bound blast radius; they do not decide completion
 
-`maxTurns` / `max_turns` and `maxBudgetUsd` / `max_budget_usd` are circuit breakers. Tripping one
-produces a result with an error subtype such as `error_max_turns`. That is an incident to log and
-surface, not a success to return. An agent that routinely ends on the cap has a decomposition
-problem, not a cap problem.
+Turn caps, iteration caps, and budget caps are circuit breakers. In the Agent SDK, a run stopped by
+a cap reports an `error_*` result subtype. Log it and surface it as an incident, because returning
+it as success hides the fact that the work is unfinished. An agent that routinely ends on the cap
+has a decomposition problem, not a cap problem.
 
-Never make an iteration counter the primary completion test.
+Keep the iteration counter as a backstop and let `stop_reason` decide completion.
 
-## 5. Retry with the defect named, or do not retry
+## 5. Retry with the defect named, or escalate
+
+This skill owns the retry boundary; other claude-craft skills point here.
 
 A retry that does not tell the model what was wrong reproduces the same failure at full cost.
-A retry payload needs three things: the original input, the output that failed, and the specific
+A retry payload carries three things: the original input, the output that failed, and the specific
 validation error.
 
-Know the boundary. Retries fix format mismatches, misplaced values, and skipped arithmetic. They
-cannot conjure information that is not in the source — for that, return `null` where the schema
-allows it, or route to a human. Retrying for missing data is how fabrication enters a pipeline.
+Retries fix format mismatches, misplaced values, and skipped arithmetic. They cannot conjure
+information that is not in the source. For missing data, return `null` where the schema allows it,
+or route to a human, because retrying for absent data is how fabrication enters a pipeline.
 
 Categorize first:
 
 | Category | Retryable | Action |
 | --- | --- | --- |
-| Transient — timeout, 5xx, rate limit | Yes, as-is | Backoff and retry |
-| Validation — bad input shape | Yes, after fixing | Retry with the error text included |
-| Business — policy limit, ineligible | No | Alternative path or escalation |
-| Permission — wrong principal | No | Different credential or escalation |
+| Transient: timeout, 5xx, rate limit | Yes, as-is | Backoff and retry |
+| Validation: bad input shape | Yes, after fixing | Retry with the error text included |
+| Business: policy limit, ineligible | No | Alternative path or escalation |
+| Permission: wrong principal | No | Different credential or escalation |
 
 ## 6. Propagate failure with structure
+
+This skill owns "empty is not unreachable"; tool-interface-design owns the error flag fields
+(`is_error` / `isError`) that carry it.
 
 Two catastrophic patterns:
 
@@ -91,18 +99,18 @@ Two catastrophic patterns:
 - **Whole-run abort.** One source fails and the run dies, discarding work that already succeeded
   and already cost money.
 
-Attempt local recovery for transient failures, then propagate a structured partial result
-carrying the failure category, what was attempted, whatever partial results exist, and suggested
-alternatives. Above all, make a valid empty result *structurally different* from an access
-failure: "the query ran and matched nothing" is a success; "the source was unreachable" is not.
+Attempt local recovery for transient failures, then propagate a structured partial result carrying
+the failure category, what was attempted, any partial results, and suggested alternatives. Make a
+valid empty result *structurally different* from an access failure: "the query ran and matched
+nothing" is a success; "the source was unreachable" is not.
 
 ## Audit checklist
 
 - [ ] Exactly one place decides the agent is done, and it reads `stop_reason`.
-- [ ] Grep for `content[0]`, `.text.includes(`, `"DONE"`, `TASK_COMPLETE` in control flow — each
+- [ ] Grep for `content[0]`, `.text.includes(`, `"DONE"`, `TASK_COMPLETE` in control flow; each
       hit is a rule 1 violation.
 - [ ] `pause_turn`, `max_tokens`, `model_context_window_exceeded`, and `refusal` are each handled
-      by name; there is no bare `else { break }`.
+      by name, and an unknown value raises rather than falling through to `break`.
 - [ ] Every `tool_use` gets a matching `tool_result`, in order, before the next request.
 - [ ] If the loop is hand-written, you can name the specific interception that justifies it.
 - [ ] Hitting a cap logs and escalates rather than returning a normal-looking result.
@@ -110,9 +118,24 @@ failure: "the query ran and matched nothing" is a success; "the source was unrea
 - [ ] A caller can tell `results: []` (no match) from `results: []` (source down).
 - [ ] One tool failure does not abort the run and discard completed work.
 
+## When reviewing code
+
+Without a checkout, review pasted loop code the same way. Report findings ranked by impact:
+
+```text
+<file>:<line> — rule <n> (<rule name>) — <fix in one sentence> — impact: high|medium|low
+```
+
+`high` = wrong completion, lost tool results, or silent failure; `medium` = a missing named
+`stop_reason` branch or a retry without error context; `low` = a hand-written loop the tool runner
+could replace. If nothing violates a rule, say so and list the checklist items you confirmed.
+
+**Verify:** after fixes, re-run the audit checklist against the changed code.
+
 ## Patterns that hold up
 
-**Every exit named.**
+<example>
+Every exit named.
 
 ```js
 while (true) {
@@ -141,22 +164,10 @@ while (true) {
 
 The final `throw` is the point of the shape: a `stop_reason` shipped after you wrote this lands
 somewhere loud instead of being silently read as completion.
+</example>
 
-**The managed loop when nothing needs intercepting.**
-
-```python
-runner = client.beta.messages.tool_runner(
-    model=MODEL,
-    max_tokens=4096,
-    tools=[search_orders, get_customer],
-    messages=[{"role": "user", "content": task}],
-)
-for message in runner:
-    pass                      # iterates until end_turn
-final = message
-```
-
-**A retry aimed at the actual defect.**
+<example>
+A retry aimed at the actual defect.
 
 ```js
 const retry = [{ role: "user", content:
@@ -166,10 +177,12 @@ const retry = [{ role: "user", content:
   `Re-extract every line item, including any on page 2.` }];
 ```
 
-The model now knows which invariant broke and where to look — unlike "that was wrong, try
-again," which changes nothing about its information state.
+The model now knows which invariant broke and where to look, unlike "that was wrong, try again,"
+which changes nothing about its information state.
+</example>
 
-**A partial failure the caller can act on.**
+<example>
+A partial failure the caller can act on.
 
 ```json
 {
@@ -182,15 +195,9 @@ again," which changes nothing about its information state.
 }
 ```
 
-**A cap that is monitored.**
-
-```python
-options = ClaudeAgentOptions(max_turns=40, max_budget_usd=2.00)
-result = await run(options)
-if getattr(result, "subtype", None) == "error_max_turns":
-    logger.error("agent hit turn cap", extra={"task": task_id})
-    return escalate(task_id, reason="turn_cap")
-```
+These field names are a convention for the inside of your result payload, not part of the Claude
+API or MCP specification.
+</example>
 
 ## Failure modes
 
@@ -201,8 +208,7 @@ if (res.content[0].type === "text") return res;     // broken
 ```
 
 A model can emit text alongside `tool_use` in the same turn. This returns mid-task with tools
-unexecuted, and it fails intermittently — it depends on whether the model narrated before
-calling.
+unexecuted, and it fails intermittently, depending on whether the model narrated before calling.
 
 **A loop bounded only by a counter.**
 
@@ -212,45 +218,16 @@ for _ in range(10):
     messages.append(res)        # tool results never appended
 ```
 
-Two defects compounding: completion decided by exhaustion, and results that never reach the
-model, so it re-requests the same tools until the counter runs out. Reads as "the model is dumb";
-is actually rule 2.
+Two defects compounding: completion decided by exhaustion, and results that never reach the model,
+so it re-requests the same tools until the counter runs out. It reads as "the model is dumb"; it is
+actually rule 2.
 
-**`pause_turn` treated as an error, or rewritten.** Aborting discards completed work.
-Summarizing the paused assistant content and sending the summary breaks the continuation
-contract. Append it verbatim.
+**`pause_turn` treated as an error, or rewritten.** Aborting discards completed work. Summarizing
+the paused content breaks the continuation contract. Append it verbatim.
 
-**Retry with no error context.** Identical inputs produce a near-identical failure — three
-attempts for 3x the cost and no new information. If the data is genuinely absent, the extra
-attempts pressure the model to invent it.
+**Retry with no error context.** Identical inputs produce a near-identical failure: three attempts
+for 3x the cost and no new information. If the data is genuinely absent, the extra attempts
+pressure the model to invent it.
 
-**Empty marked success, or the run aborted.**
-
-```json
-{ "results": [], "status": "success" }
-```
-
-Makes a source outage indistinguishable from "nothing matched," so the caller reports a gap as a
-finding.
-
-## Porting to other stacks
-
-These are control-flow rules, not SDK rules.
-
-- **LangGraph and other state machines** — the conditional edge out of the model node must read
-  the raw stop reason off the response, not a parsed field or a regex over content. Put the cap
-  on `recursion_limit` and treat hitting it as a graph error, not a terminal state.
-- **OpenAI-style loops** — `finish_reason` covers less ground (`stop`, `tool_calls`, `length`,
-  `content_filter`). `length` is the `max_tokens` analogue; there is no `pause_turn` equivalent,
-  so checkpointing long server-tool turns is yours to solve. The append rule is identical.
-- **Anywhere** — the four error categories and the empty-vs-unreachable distinction belong in
-  your tool wrapper layer. No protocol hands them to you.
-
-## Scope note
-
-The API's tool-result failure flag is `is_error` (snake_case) on a `tool_result` block; MCP's is
-`isError` (camelCase) on a tool result. `status: "partial_failure"`, `errorCategory`,
-`isRetryable`, and `alternativeApproaches` are **not** in either specification — they are a
-convention recommended here for the inside of your result payload. Adopt them consistently, but
-do not describe them to your team as platform features. Confirm current `stop_reason` values and
-field names against the Claude API documentation before relying on them.
+**Empty marked success.** `{ "results": [], "status": "success" }` makes a source outage
+indistinguishable from "nothing matched," so the caller reports a gap as a finding.

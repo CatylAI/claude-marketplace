@@ -1,124 +1,77 @@
 ---
 name: file-scope-rules
+description: "Use when setting in_diff on a review finding, deciding whether a finding may block a change, or scoping a scan or review. The causation test for in_diff, why a pre-existing issue keeps its severity but never blocks, and which paths to skip."
 license: MIT
-description: Which files to include or exclude when scanning, reviewing or analyzing a codebase, plus the diff-scope rule that decides whether a review finding may block approval. Use before any repo-wide scan, audit, or pull request review.
 ---
 
-# File Scope Rules
+# File scope rules
 
-## Always exclude
+## The diff-scope rule
 
-| Pattern | Reason |
-| --- | --- |
-| `node_modules/`, `vendor/` | Vendored dependencies |
-| `dist/`, `build/`, `out/`, `.next/`, `target/` | Build artifacts |
-| `__pycache__/`, `.pytest_cache/`, `.mypy_cache/` | Language caches |
-| `.git/` | Version control internals |
-| `*.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock` | Machine-generated lockfiles |
-| `.terraform/`, `.terragrunt-cache/` | Provider/module caches |
-| `coverage/`, `.nyc_output/` | Coverage reports |
-| `.env`, `.env.*` | Environment files — never read or quote these |
-| `.worktrees/` | Working copies of the same repo |
+**A finding blocks only when this change introduced it or made it worse.** A pre-existing issue is
+reported with `in_diff: false` and keeps the severity its impact earns. Scope is what stops it
+blocking; its severity stays as it is.
 
-Excluding lockfiles from *review* does not mean ignoring them: a dependency change
-still matters, it just belongs in the manifest diff, not line-by-line.
-
-## Always include
-
-| Pattern | Reason |
-| --- | --- |
-| `src/`, `lib/`, `app/`, `pkg/`, `internal/` | Application source |
-| `*.tf`, `*.tfvars` | Infrastructure as code |
-| CI pipeline definitions | Deploy and gate behavior |
-| `Dockerfile*`, `docker-compose*` | Container definitions |
-| `Makefile`, `justfile`, `Taskfile.yml` | Build and task entry points |
-| `*.test.*`, `*.spec.*`, `__tests__/`, `tests/` | Test files |
-
-## Stack detection
-
-| Marker file | Stack | Confidence |
-| --- | --- | --- |
-| `pyproject.toml`, `requirements.txt`, `setup.py` | Python | High |
-| `tsconfig.json`, or `package.json` with a TypeScript dep | TypeScript | High |
-| `package.json` without TypeScript | JavaScript | High |
-| `go.mod` | Go | High |
-| `Cargo.toml` | Rust | High |
-| `pom.xml`, `build.gradle*` | JVM | High |
-| any `*.tf` | Terraform | High |
-| `next.config.*` | Next.js | High |
-| `Dockerfile` | Containerized | Medium |
-
-## Determining scope when none is given
-
-1. **Changed files** — `git diff --name-only HEAD~1` or `git diff --staged --name-only`.
-2. **Directory argument** — scope to that subtree if the caller named one.
-3. **Whole repo** — only when explicitly requested. Warn if it exceeds ~500 files;
-   a scan that large produces findings nobody reads.
-
-## The diff-scope blocker rule (PR review)
-
-**A finding may block approval only if the pull request introduced it or made it worse.**
-A pre-existing issue in code the PR never touched is reported with `in_diff: false` and
-**keeps whatever severity its impact earns** — it simply does not block. The sole
-exception is a genuinely critical issue, below.
-
-Scope and severity are separate axes. Capping out-of-diff findings at "nit" folds them
-together and destroys information: a latent SQL injection ends up labelled like a
-whitespace complaint, and every downstream consumer — the inline-comment selector, a
-severity-filtered remediation pass, the next review of the same repo — loses the impact
-signal permanently. `in_diff: false` already carries the "does not block" consequence.
-
-This is the rule reviewers break most often. Over-escalating latent issues in untouched
-code stalls correct changes and erodes author trust. Apply the causation test to every
-finding before assigning severity.
+Scope and severity are separate axes (see `code-review-standards`). Capping an out-of-diff finding at `NIT`
+makes a latent SQL injection look like a whitespace complaint to every later reader: the
+inline-comment selector, a severity-filtered fix-up pass, the next review of the same repo.
+`in_diff: false` already says "does not block".
 
 ### The causation test
 
-Ask: **is the problematic line added or modified by this diff?**
-
-```bash
-git diff "origin/$TARGET_BRANCH...origin/$SOURCE_BRANCH" -- "$CITED_FILE"
-```
+Ask: **is the problematic line added or modified by this change, or does the change break it?**
+Answer from the diff under review. In the code-review pipeline that is `.code-review/DIFF.md`;
+elsewhere, `git diff <target>...<source> -- <file>`.
 
 | Where the root cause lives | `in_diff` | Severity | Blocks? |
 | --- | --- | --- | --- |
-| On a line added or modified by the diff | `true` | Whatever impact earns | Yes, at or above the blocking floor (a nit never blocks) |
-| On an unchanged line that the diff **breaks** (a changed export breaks an existing consumer) | `true` — the change made it worse | Whatever impact earns | Yes, same as above |
-| In unchanged code the diff does not affect — pre-existing, latent, "newly relevant", dead code, global gates the PR did not move | `false` | Whatever impact earns — **not capped** | No, unless critical |
+| A line the diff added or modified | `true` | what impact earns | it can; `contract.py` decides |
+| An unchanged line the diff breaks, e.g. a changed signature whose caller was not updated | `true`; anchor it on the changed line | what impact earns | it can, as above |
+| Unchanged code the diff does not affect: latent, dead, "newly relevant", a global gate the change did not move | `false` | what impact earns, uncapped | no |
 
-The test is **causation, not proximity**. "This file matters more now because of the
-feature" does not make a latent bug in it blocking. "A reader can reach this code from
-the new path" does not either, when the new path is itself correct. Only "this change
-created or worsened it" qualifies.
+The test is causation, not proximity. "This file matters more now" does not make a latent bug in it
+the change's fault, and neither does "the new path can reach this code" when the new path is itself
+correct. Only "this change created or worsened it" sets `in_diff: true`.
 
-### The critical exception
+### A critical pre-existing issue
 
-An out-of-diff finding may still block only if it is genuinely critical:
+An exploitable hole reachable in production, or data loss on a normal path, still gets
+`in_diff: false` when this change did not cause it. Report it at `BLOCKER` and name it first in your
+summary so a human acts on it separately. Blocking the change would not fix the issue, and the
+pipeline's predicate never blocks on `in_diff: false`, so flipping scope to force a block is
+anchor-shopping.
 
-- An actively exploitable security hole reachable in production — not theoretical, not
-  config-gated, not dependent on trusted input turning hostile.
-- Data loss or corruption that occurs on a normal code path.
-- A live production-breaking defect, not a latent stub with zero callers.
+### Two ways reviewers break the rule
 
-The bar is high. "Could theoretically 404", "is a TODO stub", "repo coverage is under
-threshold", "defense in depth would be nice" are not critical. When unsure, it is not
-critical: report it with `in_diff: false` at its real severity and let scope keep it from
-blocking. Do not relabel it.
+- **Anchor-shopping.** Attaching a finding to a new test file because the buggy source is not in the
+  diff, then letting it block. Either the diff genuinely breaks the unchanged code (anchor on the
+  in-diff line that breaks it) or it does not (`in_diff: false`, same severity).
+- **Downgrading for uncertainty.** Certainty is `confidence`. A MAJOR you could only partly trace is
+  a MAJOR at `MEDIUM` confidence. It stays a MAJOR, and it stays in the report.
 
-### Reporting out-of-scope findings
+## Paths a scan or review skips
 
-Do not silently drop them and do not downgrade them. Report them with `in_diff: false`,
-labelled `[PRE-EXISTING / OUT-OF-DIFF]`, plus one line noting they are not introduced by
-this change and belong on a separate ticket. The signal and its magnitude both survive,
-and a correct change still merges.
+Review changed source, tests, infrastructure-as-code, CI definitions, container and build files.
+Skip these, because nobody hand-writes them or they are not this repo's code:
 
-### Anti-patterns
+| Pattern | Why |
+| --- | --- |
+| `node_modules/`, `vendor/`, `.venv/` | vendored dependencies |
+| `dist/`, `build/`, `out/`, `.next/`, `target/` | build output |
+| `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.terraform/`, `.terragrunt-cache/` | tool caches |
+| `coverage/`, `.nyc_output/` | coverage reports |
+| lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `poetry.lock`, `*.lock`) | generated; review the manifest change instead |
+| `.worktrees/`, `.git/` | other copies of the repo, VCS internals |
+| `.env`, `.env.*` | secrets; do not read or quote them |
 
-- **Anchor-shopping.** Attaching a finding to a new test file because the buggy source
-  file is not in the diff, then marking it blocking. Writing "anchored here since the
-  source is not in this diff" is an admission about anchoring, not a judgement about
-  impact. Either the diff genuinely breaks the unchanged code — re-anchor on the in-diff
-  line and keep it blocking — or set `in_diff: false` and keep the severity.
-- **Downgrading for uncertainty.** Certainty is `confidence`, not `severity`. A major
-  issue you could only partly trace is a major issue at medium confidence, which should
-  make the overall verdict *incomplete*. It is never a minor, never a nit, never dropped.
+When no scope is given, review the changed files (`git diff --name-only <base>...HEAD`, or the staged
+set), then a directory the caller named, and the whole repo only when asked.
+
+## Verify
+
+Before filing, check each `in_diff: true` finding's `location` against the diff: the line is added
+or modified there, or the finding names the changed line that breaks it. Every other finding is
+`in_diff: false` at unchanged severity.
+
+Without a checkout, apply the causation test to the diff the user pastes. When the paste does not
+show whether the change caused a finding, say so and lower its `confidence`, not its severity.

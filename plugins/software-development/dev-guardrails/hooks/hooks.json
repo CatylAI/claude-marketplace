@@ -1,11 +1,24 @@
 {
+  "description": "dev-guardrails: PreToolUse gates for secrets, destructive git and plugin-cache edits; non-blocking context and reports on the other events.",
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup|resume|clear|fork",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/session-start.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/session-start.ts",
+            "timeout": 45
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/post-compact.ts",
+            "timeout": 10
           }
         ]
       }
@@ -15,17 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/user-prompt-submit.ts"
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-compact.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/user-prompt-submit.ts",
+            "timeout": 5
           }
         ]
       }
@@ -35,100 +39,74 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/stop.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/stop.ts",
+            "timeout": 15
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "^Bash$",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-bash.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/pre-bash.ts",
+            "timeout": 15
           }
         ]
       },
       {
-        "matcher": "^(Write|Edit)$",
+        "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-write-edit.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/pre-write-edit.ts",
+            "timeout": 10
           }
         ]
       },
       {
-        "matcher": "^Agent$",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-agent.ts"
-          }
-        ]
-      },
-      {
-        "matcher": "^mcp__",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/pre-mcp-tool.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/pre-mcp-tool.ts",
+            "timeout": 10
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "^Bash$",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-bash.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/post-bash.ts",
+            "timeout": 10
           }
         ]
       },
       {
-        "matcher": "^(Write|Edit)$",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-write-edit.ts"
-          },
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-type-check.ts"
-          },
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-test.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/post-write-edit.ts",
+            "timeout": 60
           }
         ]
-      },
+      }
+    ],
+    "PostToolUseFailure": [
       {
-        "matcher": "^TodoWrite$",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-todo.ts"
-          }
-        ]
-      },
-      {
-        "matcher": "^Agent$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-agent.ts"
-          }
-        ]
-      },
-      {
-        "matcher": "^mcp__",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning ${CLAUDE_PLUGIN_ROOT}/hooks/src/post-mcp-tool.ts"
+            "command": "node --experimental-strip-types --disable-warning=ExperimentalWarning \"${CLAUDE_PLUGIN_ROOT}\"/hooks/src/post-mcp-tool.ts",
+            "timeout": 10
           }
         ]
       }

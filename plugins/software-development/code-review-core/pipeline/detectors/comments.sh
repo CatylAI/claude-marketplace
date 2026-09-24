@@ -89,7 +89,8 @@ SLASH = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".rs", ".java", ".kt", ".s
 def add(path, line, rule, title, rec):
     findings.append({
         "path": path, "line": int(line), "rule": rule, "severity": NIT,
-        "category": ARCHITECTURE, "title": title[:300], "recommendation": rec[:600],
+        # Untruncated: normalize.py's mk() owns the title/recommendation caps.
+        "category": ARCHITECTURE, "title": title, "recommendation": rec,
     })
 
 

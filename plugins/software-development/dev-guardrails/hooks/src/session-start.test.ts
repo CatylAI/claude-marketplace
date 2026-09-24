@@ -5,16 +5,19 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { formatSummaryLine, parseWorktreeList } from './session-start.ts';
+import { formatCarryForward } from './post-compact.ts';
+import { buildPromptContext } from './user-prompt-submit.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SESSION_START = join(HERE, 'session-start.ts');
 const POST_COMPACT = join(HERE, 'post-compact.ts');
 const USER_PROMPT = join(HERE, 'user-prompt-submit.ts');
 
-// These three hooks run their work at module scope and end in process.exit(0), so they cannot be
-// imported — every assertion has to be made against a real spawn. What is worth pinning is the
-// contract Claude Code depends on: context goes to STDOUT, the process exits 0, and no session
-// hook is ever the reason a session fails to start.
+// What is pinned here is the contract Claude Code depends on: context goes to STDOUT, the process
+// exits 0, and no session hook is ever the reason a session fails to start. Plain stdout on
+// SessionStart and UserPromptSubmit is re-sent with every request, so silence when there is
+// nothing to say is part of the contract too.
 function spawnHook(
   file: string,
   input: string,
@@ -28,38 +31,50 @@ function spawnHook(
   );
 }
 
+// A throwaway git repo with one commit, so the summary/commit-log assertions do not depend on
+// the suite's own working directory being inside a repository (it is not when the plugin tree
+// is checked out on its own).
+function tempRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'ss-repo-'));
+  const run = (...args: string[]): void => { spawnSync('git', args, { cwd: dir }); };
+  run('init', '-q', '-b', 'feat/PROJ-1-thing');
+  run('config', 'user.email', 'a@b.test');
+  run('config', 'user.name', 'Tester');
+  run('commit', '-q', '--allow-empty', '-m', 'feat: initial commit');
+  return dir;
+}
+
 describe('session-start.ts', () => {
-  it('exits 0 and writes its context to stdout', () => {
-    const r = spawnHook(SESSION_START, '{}');
+  it('exits 0 and writes a one-line summary to stdout', () => {
+    const r = spawnHook(SESSION_START, '{}', {}, tempRepo());
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /=== Session Context ===/);
-    assert.match(r.stdout, /=== Ready ===/);
-    assert.match(r.stdout, /Working Directory:/);
+    assert.match(r.stdout, /^Branch: /);
   });
 
-  // The default must stay tight: a slow, chatty session start is one people disable, and a
-  // disabled hook reports nothing at all.
-  it('keeps the default terse and points at the verbose switch', () => {
+  // Claude Code already supplies the working directory, and banners and a hint aimed at the user
+  // are tokens Claude pays for on every request.
+  it('carries no banners, working directory or user-facing hint by default', () => {
     const r = spawnHook(SESSION_START, '{}');
-    assert.match(r.stdout, /CLAUDE_SESSION_VERBOSE=1/);
-    assert.ok(!/Recent Commits:/.test(r.stdout), 'the commit log is verbose-only');
+    assert.ok(!/===/.test(r.stdout), 'no banner lines');
+    assert.ok(!/Working Directory/.test(r.stdout));
+    assert.ok(!/CLAUDE_SESSION_VERBOSE/.test(r.stdout));
+    assert.ok(!/Recent commits:/.test(r.stdout), 'the commit log is verbose-only');
   });
 
   it('adds the commit log under CLAUDE_SESSION_VERBOSE', () => {
-    const r = spawnHook(SESSION_START, '{}', { CLAUDE_SESSION_VERBOSE: '1' });
+    const r = spawnHook(SESSION_START, '{}', { CLAUDE_SESSION_VERBOSE: '1' }, tempRepo());
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /Recent Commits:/);
+    assert.match(r.stdout, /Recent commits:/);
   });
 
-  it('exits 0 outside a git repository', () => {
+  it('says nothing and exits 0 outside a git repository', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ss-'));
     const r = spawnHook(SESSION_START, '{}', {}, empty);
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /=== Ready ===/);
+    assert.equal(r.stdout, '');
   });
 
-  // It reports; it never fixes. A session-start hook that installs or rewrites something
-  // surprises the user at the moment they have the least context for it.
+  // It reports; it never fixes.
   it('leaves the directory it inspected untouched', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ss-'));
     spawnHook(SESSION_START, '{}', { CLAUDE_SESSION_VERBOSE: '1' }, empty);
@@ -68,43 +83,116 @@ describe('session-start.ts', () => {
   });
 });
 
-describe('post-compact.ts', () => {
-  it('exits 0 and emits the carry-forward block on stdout', () => {
-    const r = spawnHook(POST_COMPACT, '{}');
-    assert.equal(r.status, 0);
-    assert.match(r.stdout, /Carry Forward Through Compaction/);
-    assert.match(r.stdout, /End Carry Forward/);
+describe('formatSummaryLine', () => {
+  it('names the ticket when the branch carries one', () => {
+    assert.equal(formatSummaryLine('feat/PROJ-7-x', 'PROJ-7', 2), 'Branch: feat/PROJ-7-x · ticket PROJ-7 · 2 uncommitted file(s)');
   });
 
-  it('exits 0 outside a git repository', () => {
-    const empty = mkdtempSync(join(tmpdir(), 'pc-'));
-    const r = spawnHook(POST_COMPACT, '{}', {}, empty);
-    assert.equal(r.status, 0);
+  it('says clean tree when nothing is uncommitted', () => {
+    assert.equal(formatSummaryLine('main', null, 0), 'Branch: main · clean tree');
   });
 });
 
-describe('user-prompt-submit.ts', () => {
+describe('parseWorktreeList', () => {
+  // Regression: the output reaches the parser trimmed, so the final record has no trailing blank
+  // line. The old loop only closed a record on a blank line and silently dropped the last worktree.
+  it('keeps the last record of trimmed porcelain output', () => {
+    const raw = [
+      'worktree /repo',
+      'HEAD 111',
+      'branch refs/heads/main',
+      '',
+      'worktree /repo-wt/feature',
+      'HEAD 222',
+      'branch refs/heads/feature/x',
+    ].join('\n');
+    const parsed = parseWorktreeList(raw, 'main');
+    assert.equal(parsed.basePath, '/repo');
+    assert.deepEqual(parsed.others, [{ path: '/repo-wt/feature', branch: 'feature/x' }]);
+  });
+
+  it('skips a detached worktree', () => {
+    const raw = ['worktree /repo', 'HEAD 111', 'branch refs/heads/main', '', 'worktree /d', 'HEAD 333', 'detached'].join('\n');
+    assert.deepEqual(parseWorktreeList(raw, 'main').others, []);
+  });
+});
+
+describe('post-compact.ts (SessionStart, matcher compact)', () => {
+  it('exits 0 and emits one carry-forward line on stdout', () => {
+    const r = spawnHook(
+      POST_COMPACT,
+      JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }),
+      {},
+      tempRepo(),
+    );
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /^Carried forward after compaction: Branch: /);
+    assert.equal(r.stdout.trim().split('\n').length, 1);
+  });
+
+  it('says nothing and exits 0 outside a git repository', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'pc-'));
+    const r = spawnHook(POST_COMPACT, '{}', {}, empty);
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, '');
+  });
+
+  it('formats branch, ticket and uncommitted count', () => {
+    assert.equal(
+      formatCarryForward('fix/AB-1', 'AB-1', 3),
+      'Carried forward after compaction: Branch: fix/AB-1 · ticket AB-1 · 3 uncommitted file(s)',
+    );
+    assert.equal(formatCarryForward('main', null, 0), 'Carried forward after compaction: Branch: main');
+  });
+});
+
+describe('buildPromptContext', () => {
+  // 2026-09-23 is a Wednesday.
+  const today = new Date(2026, 8, 23, 12);
+  const opts = { today, home: '/home/dev' };
+
   it('resolves a relative date to an ISO date', () => {
+    const out = buildPromptContext('ship this by EOW please', opts);
+    assert.match(out, /Date resolution \(today is 2026-09-23\)/);
+    assert.match(out, /"EOW" -> 2026-09-25/);
+  });
+
+  // Claude Code already tells the model today's date; restating it on every prompt that says
+  // "today" is a per-request cost for nothing.
+  it('does not resolve "today" on its own', () => {
+    assert.equal(buildPromptContext('what did we change today', opts), '');
+  });
+
+  it('resolves "next friday" once, not again as a bare "friday"', () => {
+    const out = buildPromptContext('demo next friday', opts);
+    assert.equal((out.match(/->/g) ?? []).length, 1);
+    assert.match(out, /"next friday" -> 2026-09-25/);
+  });
+
+  it('expands a tilde path to an absolute one', () => {
+    const out = buildPromptContext('read ~/notes/todo.md and ~/notes/todo.md', opts);
+    assert.match(out, /Path expansion:\n {2}~\/notes\/todo\.md -> \/home\/dev\/notes\/todo\.md$/);
+  });
+
+  it('returns nothing for a prompt with nothing to resolve', () => {
+    assert.equal(buildPromptContext('refactor the parser', opts), '');
+  });
+});
+
+describe('user-prompt-submit.ts as Claude Code runs it', () => {
+  it('writes the resolution to stdout and exits 0', () => {
     const r = spawnHook(USER_PROMPT, JSON.stringify({ prompt: 'ship this by EOW please' }));
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /DATE RESOLUTION/);
-    assert.match(r.stdout, /\d{4}-\d{2}-\d{2}/);
+    assert.match(r.stdout, /Date resolution/);
   });
 
-  // `~` is expanded by the shell, so a tool call that passes it through verbatim opens a
-  // directory literally named `~`.
-  it('expands a tilde path to an absolute one', () => {
-    const r = spawnHook(USER_PROMPT, JSON.stringify({ prompt: 'read ~/notes/todo.md' }));
+  // Regression: the branch's ticket key used to be injected on every prompt.
+  it('does not inject the branch ticket', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'ups-git-'));
+    spawnSync('git', ['init', '-q', '-b', 'feat/PROJ-42-thing', repo]);
+    const r = spawnHook(USER_PROMPT, JSON.stringify({ prompt: 'refactor the parser' }), {}, repo);
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /PATH EXPANSION/);
-    assert.match(r.stdout, /notes\/todo\.md/);
-  });
-
-  it('says nothing about a prompt with nothing to resolve', () => {
-    const r = spawnHook(USER_PROMPT, JSON.stringify({ prompt: 'refactor the parser' }));
-    assert.equal(r.status, 0);
-    assert.ok(!/DATE RESOLUTION/.test(r.stdout));
-    assert.ok(!/PATH EXPANSION/.test(r.stdout));
+    assert.equal(r.stdout, '');
   });
 
   it('exits 0 on an empty prompt and on unparseable input', () => {
@@ -112,8 +200,6 @@ describe('user-prompt-submit.ts', () => {
     assert.equal(spawnHook(USER_PROMPT, 'not json at all').status, 0);
   });
 
-  // It normalizes context; it does not persist anything. An earlier design cached ticket
-  // summaries under the user's home directory on every prompt.
   it('writes nothing to disk', () => {
     const empty = mkdtempSync(join(tmpdir(), 'ups-'));
     spawnHook(USER_PROMPT, JSON.stringify({ prompt: 'due tomorrow' }), {}, empty);

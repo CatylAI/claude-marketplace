@@ -13,6 +13,8 @@
 # these assertions to which binaries happen to be installed. Two tests exercise the wiring itself.
 
 set -uo pipefail
+# No __pycache__ left in the plugin tree: the suites import normalize/contract/testpaths in place.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PREP="$SELF_DIR/prepare-context.sh"
@@ -62,8 +64,16 @@ print($2)" "$1" 2>/dev/null; }
 printf 'prepare-context tests (shell: %s)\n' "${ZSH_VERSION:+zsh}${BASH_VERSION:+bash $BASH_VERSION}"
 
 # ============================================================== argument handling
-t="--base is required"
-if ! "$PREP" >/dev/null 2>&1; then pass "$t"; else fail "$t" "exited 0 with no --base"; fi
+# --base is OPTIONAL now (origin/HEAD -> origin/main -> origin/master). This case used to run the
+# prepare-context with no --base from the suite's own cwd, which after the fallback would have scanned THIS
+# repository and written .code-review into it. It now runs in a throwaway repo with no remote refs.
+t="no --base and no origin refs: exits 2 and names every ref it tried"
+d="$(mkrepo nobase)"
+git -C "$d" update-ref -d refs/remotes/origin/main
+( cd "$d" && "$PREP" --out "$d/o" >/dev/null 2>"$d/.err" ); rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'origin/HEAD' "$d/.err" && grep -q 'origin/main' "$d/.err" \
+   && grep -q 'origin/master' "$d/.err" && grep -q -- '--base main' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc stderr: $(head -c 300 "$d/.err")"; fi
 
 t="unresolvable base ref exits non-zero"
 d="$(mkrepo badbase)"
@@ -768,6 +778,105 @@ printf '# narrowed by a human\n*.json\n' > "$d2/.code-review/.gitignore"
 run_prep "$d2" >/dev/null
 if grep -q 'narrowed by a human' "$d2/.code-review/.gitignore"; then pass "$t"
 else fail "$t" "prepare-context clobbered a user-edited fence"; fi
+
+# ============================================================== regressions: review of the pipeline
+# Each case below failed against the code before its fix and passes after it.
+
+run_bounded() {
+  local secs="$1" pid i=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge $((secs * 10)) ]; then
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wait "$pid"
+}
+
+d="$(mkrepo argloop)"
+for args in "--base" "--base origin/main --out" "--effort"; do
+  t="'prepare-context.sh $args' exits 2 instead of hanging"
+  # shellcheck disable=SC2086  # word-splitting $args into separate flags is the point
+  ( cd "$d" && run_bounded 10 "$PREP" --skip-scan $args ) >/dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 2 ]; then pass "$t"; else fail "$t" "rc=$rc (124 = hung)"; fi
+done
+
+t="--max-diff-lines must be a positive integer (was a Python traceback after the scan)"
+( cd "$d" && "$PREP" --skip-scan --base origin/main --out "$d/o" --max-diff-lines lots ) >/dev/null 2>"$d/.err"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'positive integer' "$d/.err"; then pass "$t"
+else fail "$t" "rc=$rc: $(head -c 200 "$d/.err")"; fi
+
+t="no --base: falls back to origin/master when that is the only remote ref"
+d="$(mkrepo onlymaster)"
+git -C "$d" update-ref refs/remotes/origin/master refs/remotes/origin/main
+git -C "$d" update-ref -d refs/remotes/origin/main
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+( cd "$d" && "$PREP" --skip-scan --out "$d/.code-review" ) >/dev/null 2>&1; rc=$?
+b="$(get "$d/.code-review/CONTEXT.json" "d['base_ref']")"
+if [ "$rc" -eq 0 ] && [ "$b" = "origin/master" ]; then pass "$t"; else fail "$t" "rc=$rc base_ref=$b"; fi
+
+t="Cargo.lock and go.sum are generated here too (the list is shared with review-scan.sh)"
+d="$(mkrepo lockfiles)"
+printf 'x = 1\n' > "$d/a.py"; printf 'lock\n' > "$d/Cargo.lock"; printf 'sum\n' > "$d/go.sum"
+commit_branch "$d"
+out="$(run_prep "$d")"
+cf="$(get "$out/CONTEXT.json" "','.join(d['changed_files'])")"
+if [ "$cf" = "a.py" ]; then pass "$t"; else fail "$t" "changed_files=$cf"; fi
+
+t="a non-ASCII path is carried as its real name, and a new module under it still trips the gate"
+d="$(mkrepo unicode)"
+mkdir -p "$d/café"; printf 'x = 1\n' > "$d/café/__init__.py"
+commit_branch "$d"
+out="$(run_prep "$d")"
+r="$(get "$out/CONTEXT.json" "(d['changed_files'], 'new module entry point' in d['architect']['reason'])")"
+if [ "$r" = "(['café/__init__.py'], True)" ]; then pass "$t"; else fail "$t" "got $r"; fi
+
+t="the scratch changed-file lists are not left behind"
+if [ -z "$(ls -A "$out" | grep '^\.changed')" ]; then pass "$t"
+else fail "$t" "left: $(ls -A "$out" | grep '^\.changed' | tr '\n' ' ')"; fi
+
+# --- second review round: each case failed before its fix
+t="a re-run deletes the previous review's agent and validator artifacts"
+# Left in place, VALIDATOR-DECISIONS.json from the last run was applied to this run's findings, and
+# a TESTING.json from the last run satisfied a gate whose agent never ran this time.
+d="$(mkrepo stale)"
+printf 'x = 1\n' > "$d/a.py"; commit_branch "$d"
+STALE="SEMANTIC.json TESTING.json ARCHITECTURE.json ARCHITECTURE.md CLAUDE_CONFIG.json VALIDATOR-DECISIONS.json VALIDATED.json VALIDATED.md CONTRACT-DEFECTS.md"
+mkdir -p "$d/.code-review"
+for f in $STALE; do printf 'stale\n' > "$d/.code-review/$f"; done
+printf '{"findings": []}\n' > "$d/.code-review/SCAN.json"   # --skip-scan keeps SCAN.json
+out="$(run_prep "$d")"
+left=""; for f in $STALE; do [ -e "$out/$f" ] && left="$left $f"; done
+if [ -z "$left" ] && [ -f "$out/SCAN.json" ]; then pass "$t"; else fail "$t" "left:$left"; fi
+
+t="a deleted file is in DIFF.md and CONTEXT.json, not an empty diff"
+d="$(mkrepo delfile)"
+printf 'def helper_func():\n    return 1\n' > "$d/lib.py"; commit_branch "$d"
+git -C "$d" update-ref refs/remotes/origin/main HEAD
+git -C "$d" rm --quiet lib.py; commit_branch "$d"
+out="$(run_prep "$d")"
+r="$(get "$out/CONTEXT.json" "(d['deleted_files'], d['diff']['files_included'], 'empty diff' in d['testing']['reason'])")"
+if [ "$r" = "(['lib.py'], ['lib.py'], False)" ] && grep -q '^-def helper_func' "$out/DIFF.md"; then pass "$t"
+else fail "$t" "got $r"; fi
+
+t="a path with a space is carried without git's trailing TAB"
+d="$(mkrepo spacepath)"
+printf 'x = 1\n' > "$d/my file.py"; commit_branch "$d"
+out="$(run_prep "$d")"
+r="$(get "$out/CONTEXT.json" "d['diff']['files_included']")"
+if [ "$r" = "['my file.py']" ] && grep -q '^### `my file.py`$' "$out/DIFF.md"; then pass "$t"
+else fail "$t" "files_included=$r"; fi
+
+t="a context step that dies leaves no scratch lists behind"
+rm -f "$out/CONTEXT.json"; mkdir -p "$out/CONTEXT.json"   # a directory: the write fails
+( cd "$d" && "$PREP" --base origin/main --out "$out" --skip-scan ) >/dev/null 2>&1; rc=$?
+left="$(ls -A "$out" | grep -E '^\.(changed|deleted)' | tr '\n' ' ')"
+if [ "$rc" -eq 2 ] && [ -z "$left" ]; then pass "$t"; else fail "$t" "rc=$rc left: $left"; fi
 
 # ============================================================== summary
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"

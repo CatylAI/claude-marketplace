@@ -1,332 +1,222 @@
 ---
 name: actions-authoring
-description: "Write and harden GitHub Actions workflows: pin third-party actions to a full commit SHA instead of a mutable tag, declare least-privilege permissions per job instead of inheriting the default token scope, keep pull_request_target away from untrusted PR code, use OIDC instead of long-lived cloud keys, cancel superseded runs with a concurrency group, and name jobs so branch protection can require them. Also covers when caching, matrix builds, reusable workflows and composite actions earn their complexity, and how to read a failing run with gh run view --log-failed. Use when creating or editing anything under .github/workflows/, reviewing a workflow for supply-chain or secret-exposure risk, or debugging a red CI run."
+description: "Writes, reviews and debugs GitHub Actions workflows to house policy: pinned actions, least-privilege tokens, safe fork triggers, OIDC. Use when editing .github/workflows/ or a run fails. Not for GitLab CI (use gitlab-workflow:gitlab-ci-authoring); not for a PR's failing checks (use pr-lifecycle)."
+when_to_use: "write a GitHub Actions workflow, add CI, pin actions to a SHA, workflow permissions, pull_request_target, OIDC from Actions, why is my workflow failing"
+allowed-tools: Read, Grep, Glob, Edit(.github/**), Bash(gh run list *), Bash(gh run view *), Bash(gh run watch *), Bash(actionlint *)
 license: MIT
-when_to_use: "write a GitHub Actions workflow, add CI to this repo, pin actions to a SHA, workflow permissions, GITHUB_TOKEN scope, pull_request_target, OIDC to AWS from Actions, cancel in-progress runs, cache dependencies in CI, matrix build, reusable workflow, composite action, required status checks, why is my workflow failing"
-allowed-tools: Bash(gh:*), Bash(git:*), Bash(python3:*), Read, Write, Edit, Grep, Glob
 ---
 
 # actions-authoring
 
-A workflow file is production code with a credential attached. It runs on a machine you do not own,
-with a token that can write to your repository, triggered by events that strangers can cause. Write
-it that way.
+Treat a workflow file as production code that holds a credential. It runs on a machine you do not
+own, with a token that can write to the repository, and outside contributors can trigger it. The
+rules below are the house policy. `code-review-core`'s `deps.sh` detector enforces the pinning rule
+as written here, so a change to that rule needs a matching change there.
 
-## Anatomy and location
+To add Claude itself to a repository's CI, use Claude Code's built-in `/install-github-app` rather
+than hand-writing that workflow.
 
-Workflows live in `.github/workflows/*.yml`, one file per workflow, at the repository root — not in a
-subdirectory, and not anywhere else. A file elsewhere is silently never run.
+## Baseline
 
 ```yaml
 name: ci
-
 on:
   pull_request:
   push:
     branches: [main]
 
-# Workflow-level default. Every job starts from this and grants itself more only when it needs it.
 permissions:
-  contents: read
+  contents: read            # workflow-level floor; jobs ask for more only when they need it
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+concurrency:                # a PR shares a group per branch; each push to main gets its own
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
-    name: test (3.12)
+    name: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+      - uses: actions/checkout@<40-char-sha>  # vX.Y.Z
+      - uses: actions/setup-python@<40-char-sha>  # vX.Y.Z
         with:
-          python-version: "3.12"
+          python-version-file: .python-version
       - run: pip install -e '.[test]'
       - run: pytest -q
 ```
 
-Two things that are not optional in any workflow you write: `timeout-minutes` on every job (the
-default is six hours, and a hung job holds a runner for all of it) and an explicit `permissions`
-block.
+Workflows live directly in `.github/workflows/`; a file in a subdirectory never runs. Give every job
+a `timeout-minutes`, since the default is six hours of a held runner, and give every workflow an
+explicit `permissions` block.
 
-## Pin third-party actions to a full commit SHA
+## Pin every remote `uses:` to a full commit SHA
+
+A tag such as `@v4` is a pointer in someone else's repository, and anyone with write access there
+can move it. The next run then executes code nobody reviewed, with this job's secrets. Pin to the
+40-character commit SHA and keep the version in a trailing comment:
 
 ```yaml
-# Wrong — a tag is a mutable pointer.
-- uses: some-org/some-action@v3
-
-# Right — an immutable commit, with the human-readable version in a trailing comment.
-- uses: some-org/some-action@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+- uses: some-org/some-action@<40-char-sha>  # vX.Y.Z
+- uses: some-org/shared/.github/workflows/build.yml@<40-char-sha>  # vX.Y.Z   (reusable workflow)
 ```
 
-`@v3` is a git tag in someone else's repository, and a tag can be moved to any commit at any time by
-anyone with write access there. You are not depending on the code you reviewed; you are depending on
-whatever that name points at the next time your workflow runs. That is a remote-code-execution hole
-with a step in your job, and it has been used: the pattern of a compromised action rewriting its own
-tags to exfiltrate every secret in every repository that referenced it is the reason this rule
-exists.
+The same applies to actions under `actions/` and `github/`, and to remote reusable workflows. Two
+cases are exempt. A local action or workflow referenced by path (`./.github/actions/setup`) is pinned
+by your own commit. A `docker://` image has no git ref; pin it by digest instead.
 
-Resolve the SHA yourself rather than copying one. **Every SHA in this document is illustrative** — a
-pin is only trustworthy if you resolved it for the version you actually reviewed:
+Resolve the SHA for the exact version you reviewed. Never copy one from an example:
 
 ```bash
-gh api repos/actions/checkout/git/ref/tags/v4.2.2 --jq '.object.sha'
+gh api repos/<owner>/<repo>/commits/<tag> --jq '.sha'
 ```
 
-A 40-character SHA cannot be moved. The trailing comment keeps it readable and gives Dependabot
-something to bump — configure `.github/dependabot.yml` with the `github-actions` ecosystem and it
-will propose SHA updates with the release notes attached, which is the review you actually want.
-
-Actions under the `actions/` and `github/` organizations are the same risk with a different owner.
-Pin them too. The only thing that does not need pinning is a local action in your own repository
-referenced by path (`./.github/actions/setup`).
+The `commits/<ref>` endpoint always returns the commit. `git/ref/tags/<tag>` returns the tag
+*object* for an annotated tag, which is the wrong SHA to pin. To keep pins current, enable Dependabot
+with the `github-actions` ecosystem in `.github/dependabot.yml`: it bumps the SHA and the comment
+together and links the release notes.
 
 ## Permissions
 
-The default `GITHUB_TOKEN` scope is a repository setting, not a property of your workflow — which
-means a workflow with no `permissions:` block has whatever scope the organization happens to have
-configured, and that can change without your file changing. Never leave it implicit.
+With no `permissions` block, the `GITHUB_TOKEN` gets whatever default the repository or organisation
+is set to, and that can change without the file changing. Declare it. A job-level block **replaces**
+the workflow-level one, and any scope it leaves out is set to `none`:
 
 ```yaml
-permissions:
-  contents: read          # workflow-level floor
-
+permissions: {}                  # strictest floor: every job lists what it needs
 jobs:
-  test:
-    # inherits contents: read, and needs nothing else
-    runs-on: ubuntu-latest
-
   comment:
     permissions:
       contents: read
-      pull-requests: write   # this job posts a comment; nothing else in the workflow can
-    runs-on: ubuntu-latest
-
+      pull-requests: write       # only this job can comment
   release:
     permissions:
-      contents: write        # this job pushes a tag
-      id-token: write        # and mints an OIDC token for the registry
-    runs-on: ubuntu-latest
+      contents: write            # pushes a tag
+      id-token: write            # mints an OIDC token
 ```
 
-A job-level `permissions` block **replaces** the workflow-level one rather than adding to it, so list
-every scope that job needs. Declaring `permissions: {}` at the workflow level and granting everything
-per job is the strictest form and is worth it in a repository with many jobs.
-
-The blast radius is per job, so keep the job that touches untrusted input separate from the job that
-holds a write scope. A single job that both builds a fork's PR and has `contents: write` is one
-malicious `package.json` script away from a force-push.
+Put jobs that run untrusted code in a different job from any write scope. A job that builds a
+fork's code while holding `contents: write` is one malicious install script away from a push to
+your repository.
 
 ## `pull_request` vs `pull_request_target`
 
-This is the single most exploited distinction in GitHub Actions.
-
-| Trigger | Runs the workflow file from | Token | Secrets |
+| Trigger | Workflow file and code | Token on a fork PR | Secrets on a fork PR |
 | --- | --- | --- | --- |
-| `pull_request` | the **base** branch | read-only by default, no write to the base repo for forks | not available to fork PRs |
-| `pull_request_target` | the **base** branch | full scope, as configured | **available, including to fork PRs** |
+| `pull_request` | the PR's merge commit, so the PR can change the workflow | read-only | none |
+| `pull_request_target` | the base branch | write, as configured | **available** |
 
-`pull_request_target` exists so a maintainer can label or comment on a fork's PR, which a fork-scoped
-token cannot do. It runs in the context of the base repository with the base repository's secrets.
+`pull_request_target` exists so a workflow can label or comment on a fork's PR. Because it holds
+secrets, a `pull_request_target` job works only with PR metadata (number, labels, title passed
+through `env:`). Keep it from checking out, installing, building or running anything from the PR
+head, including `ref: ${{ github.event.pull_request.head.sha }}` and actions that read the PR's
+files. A single `postinstall` script is enough to exfiltrate every secret.
 
-**The rule: a `pull_request_target` workflow must not check out, build, install, or execute the pull
-request's head.** No `ref: ${{ github.event.pull_request.head.sha }}`, no `npm install` on the PR's
-lockfile, no running its tests, no action whose input is a file from the PR. Doing any of those runs
-the contributor's code with your secrets in scope, and a `postinstall` script is enough to exfiltrate
-every one of them.
+When fork code has to be built *and* a result posted, split the work. A `pull_request` workflow
+builds with no secrets and uploads an artifact. A separate `workflow_run` workflow with the write
+scope downloads that artifact and posts it. Treat the artifact as untrusted input: parse it as data,
+never execute it, and look up the PR number through the API rather than trusting a number the
+artifact contains.
 
-```yaml
-# Correct use: it reads metadata and writes a label. It never touches the PR's files.
-name: triage
-on:
-  pull_request_target:
-    types: [opened, reopened]
-permissions:
-  contents: read
-  pull-requests: write
-jobs:
-  label:
-    runs-on: ubuntu-latest
-    steps:
-      - run: gh pr edit "$PR" --add-label needs-triage
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-```
-
-If you need to both build a fork's code and post a result, split it: a `pull_request` job builds with
-no secrets and uploads an artifact, and a separate `workflow_run` job with the write scope downloads
-that artifact and posts. The privileged half never executes untrusted code.
-
-While you are there: never interpolate untrusted event data into a `run:` block. `${{
-github.event.pull_request.title }}` inside a shell line is evaluated by the runner *before* the shell
-sees it, so a PR titled with a command substitution runs that command. Pass it through `env:` and
-reference `"$TITLE"` as a quoted shell variable, as above.
+Pass event data to a shell through `env:` and quote it as `"$TITLE"`. A `${{ github.event.* }}`
+expression inside `run:` is substituted before the shell parses the line, so a PR title containing
+`$(...)` would run as a command.
 
 ## Secrets and cloud credentials
 
-`secrets.GITHUB_TOKEN` is minted per job, scoped by your `permissions:` block, and revoked when the
-job ends. Prefer it over a personal access token for anything inside the repository — a PAT is a
-long-lived credential with a human's full access, and it is the wrong tool for "this job needs to
-comment on a PR".
-
-For anything outside the repository, use OIDC rather than storing a key:
+Prefer `secrets.GITHUB_TOKEN`, which is scoped per job and expires with it, over a personal access
+token for anything inside the repository. For cloud access, use OIDC in place of a stored key: the
+job needs `id-token: write`, and the cloud-side trust policy decides which repository, branch or
+environment may assume the role.
 
 ```yaml
-jobs:
-  deploy:
     permissions:
-      id-token: write     # required to mint the OIDC token
+      id-token: write
       contents: read
-    runs-on: ubuntu-latest
     steps:
-      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4.0.2
+      - uses: aws-actions/configure-aws-credentials@<40-char-sha>  # vX.Y.Z
         with:
-          role-to-assume: arn:aws:iam::<account-id>:role/<ci-role-name>
+          role-to-assume: arn:aws:iam::<account-id>:role/<ci-role>
           aws-region: <region>
 ```
 
-The runner exchanges a short-lived signed token for temporary cloud credentials. There is no static
-key in the repository to leak, rotate, or find in a log. Scope the trust policy on the cloud side to
-the specific repository *and* branch or environment — a trust policy that accepts any repository from
-the GitHub OIDC issuer is not an improvement over a stored key.
-
-Two more: secrets are masked in logs only when they appear verbatim, so a base64-encoded or
-line-split secret prints in the clear; and `pull_request` runs from forks get no secrets at all, so a
-workflow that silently degrades when a secret is empty will behave differently for contributors than
-it did for you.
+For the AWS trust policy (the `sub` and `aud` conditions that make this safe), follow
+`terraform-aws:aws-iam-boundaries`. Log masking catches a secret only when it appears verbatim, so a
+base64-encoded or line-split secret prints in clear text. Fork PRs receive no secrets, so a step that
+quietly skips when a secret is empty behaves differently for contributors than for you.
 
 ## Concurrency
 
-Without a `concurrency` group, pushing three times to a branch runs three full builds and the first
-two are already irrelevant.
+A `concurrency` group runs one job or workflow at a time. By default (`queue: single`) it also holds
+at most one pending run: a newer run cancels the pending one and takes its place, even with
+`cancel-in-progress: false`. `cancel-in-progress: true` cancels the running one as well. The
+consequences:
+
+- Group pull requests on `${{ github.workflow }}-${{ github.ref }}` so different branches do not
+  cancel each other, and cancel in-progress runs there: only the newest commit matters.
+- Keep pushes to `main` out of a shared group, because a pending run would be replaced and that
+  commit would never get a result. The baseline groups a push by `github.sha`, so each push has its
+  own group.
+- For deployments that must run one at a time and in order, add `queue: max`: up to 100 runs wait
+  instead of replacing each other, and further runs are cancelled once it is full. It cannot be
+  combined with `cancel-in-progress: true`. Leave the default when only the newest deploy matters.
 
 ```yaml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: production-deploy
+  queue: max
 ```
 
-Group on the workflow plus the ref so different branches do not cancel each other. Use
-`cancel-in-progress: false` for deployment workflows — cancelling a half-finished deploy leaves the
-target in a state nobody designed.
+`queue` is recent; check that your GitHub Enterprise Server version documents it before relying on it.
 
-## Caching, matrices, reusable workflows, composite actions
+## Required checks
 
-Each of these buys something and costs something. Add one when the thing it buys is a problem you
-actually have.
-
-| Mechanism | Earns its place when | Costs |
-| --- | --- | --- |
-| `actions/cache` | restore is meaningfully faster than a clean install, and the key is exact | a stale or over-broad key makes builds non-reproducible in a way that is miserable to debug; `setup-*` actions already cache with `cache: pip`/`cache: npm`, so reach for those first |
-| `strategy.matrix` | the same job must genuinely run across versions or platforms | N times the minutes; add `fail-fast: false` only when you want every cell's result, and cap with `max-parallel` on a shared runner pool |
-| reusable workflow (`workflow_call`) | three or more repositories need the *same* pipeline, versioned centrally | a change in one place changes every caller; pin callers to a tag or SHA of the reusable workflow |
-| composite action | a sequence of steps repeats within a repository | another unit to version and test; two steps repeated twice is not worth it |
-
-Cache keys should include the lockfile hash so a dependency change invalidates them:
-
-```yaml
-- uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57  # v4.2.0
-  with:
-    path: ~/.cache/pip
-    key: pip-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
-    restore-keys: pip-${{ runner.os }}-
-```
-
-## Naming jobs so branch protection can require them
-
-Branch protection matches a required check by the **name the check reports**, which is the job's
-`name:` — or, in a matrix, `name (value1, value2)`. Rename a job and the required check silently
-stops matching: the rule now requires a check that never reports, so the PR either blocks forever or,
-depending on configuration, stops being gated at all.
-
-```yaml
-jobs:
-  test:
-    name: test            # required check is "test", and stays "test"
-    strategy:
-      matrix:
-        python: ["3.11", "3.12"]
-    # reports as: test (3.11), test (3.12)
-```
-
-For a matrix, either require every cell by name or add a single aggregate job that `needs:` all of
-them and require that one instead — the aggregate keeps its name when the matrix changes:
-
-```yaml
-  ci-ok:
-    name: ci-ok
-    needs: [test, lint]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          [ "${{ needs.test.result }}" = "success" ] || exit 1
-          [ "${{ needs.lint.result }}" = "success" ] || exit 1
-```
-
-`if: always()` matters: without it the aggregate is skipped when a dependency fails, and a skipped
-required check can read as satisfied.
-
-Read what protection currently requires before renaming anything:
+Branch protection matches a required check by the name the job reports: its `name:`, or
+`name (a, b)` for a matrix cell. Renaming a job silently orphans the requirement. For a matrix,
+require one aggregate job instead (see [references/patterns.md](references/patterns.md)). Read what
+is required before renaming anything, checking both classic protection and rulesets:
 
 ```bash
-gh api "repos/<owner>/<repo>/branches/main/protection" --jq '.required_status_checks.contexts'
+gh api "repos/{owner}/{repo}/branches/main/protection/required_status_checks" --jq '.contexts'
+gh api "repos/{owner}/{repo}/rules/branches/main" --jq '.[] | select(.type == "required_status_checks")'
 ```
 
-## Debugging a failing run
+Caching, matrices, reusable workflows and composite actions each have a cost; the trade-offs and
+worked examples are in [references/patterns.md](references/patterns.md).
+
+## Debugging a run
 
 ```bash
-# What ran, and how it ended
-gh run list --limit 10
-gh run list --workflow ci.yml --branch "$(git branch --show-current)" --limit 5
-
-# Only the failing steps' output — the difference between 50 lines and 50,000
-gh run view <run-id> --log-failed
-
-# The whole log when the failure is an ordering or environment problem
-gh run view <run-id> --log
-
-# A specific job
-gh run view <run-id> --job <job-id> --log-failed
-
-# Re-run only what failed, once you have a reason to think it was flaky
-gh run rerun <run-id> --failed
-
-# Follow a run that is still going
-gh run watch <run-id>
+gh run list --branch <branch> --limit 5
+gh run view <run-id> --log-failed             # only the failing steps
+gh run view <run-id> --job <job-id> --log     # one job's full log
+gh run rerun <run-id> --failed                # only with a stated reason to suspect flakiness
 ```
 
-Validate the file before pushing it — a YAML error means the workflow does not appear at all, which
-looks exactly like a trigger that did not match:
+When a workflow did not run at all, check in this order:
 
-```bash
-python3 -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]))' .github/workflows/ci.yml
-```
+1. The YAML did not parse.
+2. The `on:` filters (`branches`, `paths`, types) excluded the event.
+3. For `schedule` and `workflow_dispatch`, the file is not on the default branch.
 
-When a workflow did not run at all, the cause is almost always one of: the file is not on the default
-branch (for `schedule` and `workflow_dispatch`), the `on:` filters do not match, `paths`/`branches`
-filters excluded it, or the YAML did not parse. Check in that order.
+For step tracing, set the repository variable `ACTIONS_STEP_DEBUG=true`, re-run, then remove it,
+since debug logs print more than you meant to keep.
 
-For step-level tracing, set the repository variables `ACTIONS_STEP_DEBUG` and `ACTIONS_RUNNER_DEBUG`
-to `true` and re-run. Turn them off afterwards — debug logs are much more likely to print something
-you did not intend to keep.
+## Verify
 
-## Review checklist
+Before a workflow change is done, check it against this list:
 
-Before merging any change to a workflow file:
+- [ ] `actionlint .github/workflows/<file>.yml` passes. Without actionlint, at least confirm the file
+      parses as YAML.
+- [ ] Every remote `uses:` is `@<40-char-sha>  # vX.Y.Z`.
+- [ ] A workflow-level `permissions` block exists, and each job grants only what it uses.
+- [ ] No `pull_request_target` job touches PR-head code; no `${{ github.event.* }}` inside `run:`.
+- [ ] Every job has `timeout-minutes`.
+- [ ] Cloud auth uses OIDC.
+- [ ] No required check's job name changed.
 
-- Every third-party `uses:` is a 40-character SHA with a version comment.
-- A `permissions:` block exists at the workflow level, and each job grants only what it needs.
-- No `pull_request_target` job checks out, installs, builds or runs the PR head.
-- No `${{ }}` interpolation of event data inside a `run:` block.
-- Every job has `timeout-minutes`.
-- Cloud auth is OIDC, not a stored access key.
-- Any job name that branch protection requires has not changed.
+## Without gh
 
-## Surface
-
-Claude Code only for the `gh` commands. Writing and reviewing the YAML is file work and reads fine
-anywhere; running `gh run view` needs a shell, which Cowork does not have.
+Writing and reviewing YAML needs only the files, or YAML pasted into the conversation. For run
+history and logs without a shell, use the GitHub MCP server's `actions_list`, `actions_get` and
+`get_job_logs`. If neither is available, ask the user to paste the failing step's log.

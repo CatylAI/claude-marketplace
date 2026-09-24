@@ -1,164 +1,138 @@
 ---
 name: mcp-integration
-description: "Wiring and building MCP servers for Claude Code and the Agent SDK: choosing the local, project, or user config scope and what belongs in .mcp.json, referencing secrets with variable expansion instead of embedding them, exposing catalogs as MCP resources rather than discovery tool calls, evaluating community servers before writing one, hosting tools in-process, enriching sparse tool descriptions so the model stops falling back to built-ins, and writing the exact mcp__server__tool names that permission rules and hook matchers require. Use when adding, debugging, or reviewing an MCP server, or deciding where its configuration lives. Not for general tool description quality or permission precedence."
+description: "Wires MCP servers into Claude Code and the Agent SDK. Use when adding, scoping, securing, or debugging an MCP server, or when a hook or allow rule on an MCP tool never fires. Covers config scope, secrets, exact tool names for rules and hooks, resources, and in-process versus subprocess hosting. Not for writing tool descriptions or schemas (use tool-interface-design); not for building a server from scratch (use mcp-builder); not for permission precedence (use deterministic-enforcement)."
+when_to_use: "add an MCP server, .mcp.json, MCP hook not firing, MCP allow rule ignored, MCP secret in config, project vs user scope"
 license: MIT
 ---
 
 # MCP integration
 
-MCP is a distribution mechanism, not an excuse to skip tool design. Every rule of good tool
-design applies to an MCP tool. This skill covers the wiring, the scoping, and the mistakes unique
-to the protocol.
+MCP is a way to distribute tools, and an MCP tool needs the same design care as any other tool.
+That design work belongs to tool-interface-design. This skill covers the wiring: where the config
+lives, how secrets get in, what names the tools end up with, and the mistakes specific to the
+protocol.
 
-Order of preference throughout: evaluate an existing server before writing one, expose data as a
-resource before writing a tool to fetch it, and enrich a description before adding a tool.
+Work in this order of preference:
+
+1. Evaluate an existing server before writing one.
+2. Expose data as a resource before writing a tool that fetches it.
+3. Improve a tool's description before adding another tool.
 
 ## 1. Put each server in the scope that matches its audience
 
-There are three scopes, and a settings file is not one of them — there is no MCP servers key in
-`settings.json`.
-
-| Scope | File | Audience |
+| Scope | Where it is stored | Who gets it |
 | --- | --- | --- |
-| `local` (default) | The user config, under that project's path | You, this project only |
-| `project` | **`.mcp.json`** at the repo root | The whole team, version-controlled |
-| `user` | The user config | You, every project |
+| `local` (the default) | `~/.claude.json`, under that project | You, in this project only |
+| `project` | **`.mcp.json`** at the repo root, committed | The whole team |
+| `user` | `~/.claude.json` | You, in every project |
 
-Team-wide servers belong in `.mcp.json` and get committed. Personal and experimental servers stay
-in the user config and never land in the shared file. The CLI's add command with a scope flag
-writes the right one for you, and a JSON variant handles entries the flags cannot express.
+- Team servers go in `.mcp.json`. Personal and experimental servers stay out of it.
+- `claude mcp add --scope <scope>` writes to the correct file for you.
+- `settings.json` has no key for defining servers. It only has keys that govern them:
+  `enableAllProjectMcpServers`, `enabledMcpjsonServers`, `allowedMcpServers`, `deniedMcpServers`,
+  and the managed-only restriction keys.
 
-When the same server name is defined twice, precedence runs local, then project, then user, then
-plugin-provided, then connectors, with managed servers ranking above all. The winning source's
-**whole entry** is used and fields are never merged across sources — so a partial override is not
-a thing. Duplicate the full entry or do not duplicate it.
+If the same server name appears in more than one place, one entry wins: local beats project, which
+beats user, then plugin-provided servers, then claude.ai connectors, and managed MCP ranks above all
+of them. The winning entry is used whole and nothing is merged across sources, so you cannot
+partially override a server. Either copy the full entry or don't define it twice.
 
-Settings keys that *do* govern MCP cover enabling all project servers, allowlisting and
-denylisting specific servers, restricting to managed servers only, and declaring managed servers.
+## 2. Reference secrets instead of embedding them
 
-## 2. Reference secrets; never embed them
+In `.mcp.json`, `${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `url` and
+`headers`. This lets the config be committed safely while each developer supplies their own
+credential.
 
-Variable expansion (`${VAR}` and `${VAR:-default}`) is supported in `.mcp.json` and in local and
-user entries, across the command, args, env, url, and headers fields. Use it, because the config
-then commits safely, each developer supplies their own credential, and token rotation needs no
-config change.
+- **An unset variable with no default does not stop the server.** The server still loads, with the
+  literal `${VAR}` text in place, and then fails in confusing ways. `claude mcp list` and `/mcp`
+  both show a missing-variable warning, so check one of them after onboarding.
+- **Some variables are always read as empty in a remote server's `url` and `headers`.** Claude
+  Code's own credentials, such as `ANTHROPIC_API_KEY`, and some cloud and registry tokens are
+  blanked there, so that a project cannot send them to a remote server. Pass the server's token
+  under a name of its own.
+- **In a plugin, declare secrets in `userConfig` with `sensitive: true`.** Claude Code prompts the
+  user when the plugin is enabled, keeps the value in secure storage (the macOS Keychain, otherwise
+  `~/.claude/.credentials.json`) rather than `settings.json`, and substitutes it as
+  `${user_config.KEY}` in the plugin's MCP config.
 
-An unset variable with no default produces a warning in the CLI's list command and keeps the
-literal `${VAR}` text — the server still loads and then fails confusingly, so check the list after
-onboarding rather than trusting silence.
+A token hardcoded in a committed `.mcp.json` stays in git history even after you remove it.
 
-A hardcoded token in `.mcp.json` is a credential in git history. There is no version of this that
-is fine.
+## 3. Pick the transport
 
-## 3. Evaluate community servers first
+- **stdio**: a local process. `claude mcp add <name> -- <command> [args...]`.
+- **`http`**: recommended for remote servers. `streamable-http` is accepted as an alias.
+- **`ws`**: WebSocket. Configure it with `claude mcp add-json`, and authenticate with headers only.
+- **`sse`**: deprecated. Move to `http` where the server supports it.
 
-Maintained servers already exist for most of the systems you are about to wrap. Build custom only
-for team-specific workflows no general server models, business logic that must be embedded in the
-tool rather than reasoned about by the agent, or proprietary internal systems.
+An entry that has a `url` but no `type` is read as stdio and skipped. Always set `type` on remote
+entries.
 
-"We want control over the tool descriptions" is not a reason to fork a server. Enrich descriptions
-at your own gateway, or wrap the few tools you actually use.
+Per-server fields you may need are `timeout`, `headers`, `headersHelper` (which generates headers
+at connect time), `oauth` and `alwaysLoad`.
 
-## 4. Expose catalogs as resources, not as discovery tool calls
+## 4. Expose catalogs as resources, not as discovery calls
 
-Claude Code supports MCP **resources**, referenced as `@server:protocol://path`, fetched and
-attached automatically, with list and read tools provided for you. Use resources for anything
-catalog-shaped — issue lists, document hierarchies, database schemas, config inventories — so the
-agent does not spend a tool call and a round trip discovering what exists before it can act.
+Claude Code attaches MCP **resources** referenced as `@server:protocol://path`. Use resources for
+anything shaped like a catalog, such as issue boards, schemas and document trees, so the agent
+doesn't spend tool calls finding out what exists.
 
-Also supported: **prompts as slash commands** (`/servername:promptname`, with arguments split on
-whitespace) and **elicitation** (form and URL dialogs, with a hook event that can auto-respond).
-Sampling is not documented as supported, so do not design a server that depends on calling back
-into the client's model.
+Other MCP features:
 
-Two useful per-tool metadata flags exist: one forces a user prompt on every call, and one exempts
-a tool from tool-search deferral so it always loads.
+- Prompts become commands, run as `/server:prompt` or `/mcp__server__prompt`.
+- Elicitation (form and URL dialogs) is supported.
+- Sampling is not documented as supported, so do not design a server that needs it.
 
-## 5. Enrich sparse descriptions, or the model will use a built-in instead
+Two per-tool `_meta` flags are worth knowing:
 
-A one-line MCP tool description loses to a built-in search tool. If your server has semantic code
-search and the model keeps grepping, the description is the bug. State capabilities, output shape,
-and the boundary explicitly — including "use this instead of Grep when…".
+- `anthropic/requiresUserInteraction: true` prompts on every call.
+- `anthropic/alwaysLoad: true` keeps the tool out of tool-search deferral.
 
-This is the general description rule applied at the protocol boundary, and it is the
-highest-value edit available on most MCP servers. Three to four sentences minimum, per tool.
+For tools that return large results, the output limit is the `MAX_MCP_OUTPUT_TOKENS` environment
+variable. A tool can raise its own limit with `_meta["anthropic/maxResultSizeChars"]`. Trim what a
+tool returns before raising either limit.
 
-## 6. Choose in-process over subprocess when you own the tools
+## 5. Host in-process when your application owns the tools
 
-The Agent SDK can host an MCP server in-process, with a create-server helper and a tool helper or
-decorator depending on language. Prefer in-process when the tools are part of your application:
-no subprocess to manage, no serialization hop, no separate lifecycle, shared process state.
+The Agent SDK can host an MCP server inside your process (`createSdkMcpServer` with `tool(...)`
+in TypeScript; see [references/in-process-server.md](references/in-process-server.md)).
 
-Prefer a subprocess or remote server when the tools must be reusable across clients, need
-independent deployment or scaling, are written in another language, or must be isolated from your
-process for security.
+- **Choose in-process** when the tools are part of your application. There is no subprocess, no
+  serialization hop and no separate lifecycle to manage.
+- **Choose a subprocess or remote server** when the tools must be reused across clients, deployed
+  or scaled on their own, written in another language, or isolated for security.
 
-Transport options on the CLI add command are stdio (the default form, with the command after a
-`--` separator), HTTP, and SSE, with a streamable-HTTP alias for HTTP. Other useful per-server
-fields cover always-load, timeout, headers, a headers helper, and OAuth.
+## 6. Write the exact tool name in every rule and matcher
 
-## 7. Use the exact tool-name form in every rule and matcher
+| Where the server comes from | Tool name Claude sees |
+| --- | --- |
+| A regular server | `mcp__<server>__<tool>` |
+| A plugin-bundled server | `mcp__plugin_<plugin>_<server>__<tool>`, with any character outside `A-Za-z0-9_-` replaced by `_` |
 
-Claude sees MCP tools as `mcp__<server>__<tool>` for a regular server, and
-`mcp__plugin_<plugin-name>_<server-name>__<tool-name>` for a plugin-bundled server, with any
-character outside `A-Za-z0-9_-` replaced by an underscore.
+Use that full name in permission rules, `allowed-tools`, a subagent's `tools` list, and hook
+matchers. **A matcher on the bare server key never fires**, and a hook that doesn't fire looks
+exactly like a hook that allowed the call. Copy the name from a transcript rather than
+reconstructing it.
 
-That full name is what you write in permission rules, a skill's allowed-tools list, a subagent's
-tools list, and hook matchers. **A matcher on the bare server key never fires for a plugin
-server** — this is the most common "my hook isn't running" cause.
+- Allow rules accept a glob only after a literal `mcp__<server>__` prefix, for example
+  `mcp__issues__get_*`.
+- Deny and ask rules also accept `mcp__*` and similar wider forms.
+- A hook matcher becomes a regex as soon as it contains a regex character, so
+  `mcp__memory__.*` matches every tool from that server.
+- The `server` field of an `mcp_tool` hook takes the registration name, `plugin:<plugin>:<server>`,
+  not the `mcp__…` tool name.
 
-Wildcard placement depends on the rule type, and getting it backwards silently produces a rule
-that never matches:
+For which rule wins when several match, see deterministic-enforcement.
 
-- **Allow** rules accept a glob only *after* a literal, glob-free `mcp__<server>__` prefix. The
-  server segment must be spelled out.
-- **Deny** and **ask** rules, and the disallowed-tools list, accept broader forms: every MCP tool,
-  a whole server, or a server-plus-glob.
-- **Hook matchers** go furthest and accept a regex in the server segment too.
+## 7. Tool quality is tool-interface-design's job
 
-So a blanket MCP deny is a useful default for an agent handling untrusted input, while a broad
-allow must enumerate servers.
+When the model reaches for Grep instead of your semantic-search tool, the tool's description is
+the bug. How to write descriptions, error results (`isError`), structured content and annotations
+all live in tool-interface-design.
 
-The server itself registers under a `plugin:<plugin-name>:<server-name>` form — that is what an
-MCP-tool hook's server field wants, not the `mcp__…` tool name.
+## Examples
 
-## 8. Build the server to the same standards as any tool
-
-Everything from general tool design applies, with three MCP-specific notes:
-
-- The failure flag is `isError: true` (camelCase) on the tool result, where the Claude API's own
-  `tool_result` block uses `is_error` (snake_case). Normalize at your boundary if you bridge both.
-- Results may carry structured content and resource links alongside the text content; use them
-  rather than stuffing JSON into a text block when the client supports it.
-- Tool annotations disclose destructive or open-world behavior. Set them honestly — they are what
-  a cautious client uses to decide whether to prompt.
-
-## Audit checklist
-
-- [ ] No credential is literal in `.mcp.json` or a committed settings file. Check git history too;
-      removing it now does not un-leak it.
-- [ ] Team servers are in `.mcp.json` and personal servers are out of it.
-- [ ] Nothing expects an MCP servers key in `settings.json`.
-- [ ] No server is defined in two scopes with the second expecting field-level inheritance.
-- [ ] The CLI's server list shows no unresolved variable warnings.
-- [ ] For each custom server, you can name the reason it is not a community server. "Better
-      descriptions" does not count.
-- [ ] No catalog is fetched by repeated tool calls where a resource would do.
-- [ ] No MCP tool description is under three sentences, and each carries a "use this instead of
-      the built-in when…" boundary.
-- [ ] Transcripts do not show the model using a built-in where an MCP tool was the better choice.
-- [ ] Permission rules, allowed-tools, subagent tools, and hook matchers all use the full tool
-      name form.
-- [ ] No glob appears in the server segment of an **allow** rule.
-- [ ] Hooks on MCP tools actually fire — verify one deliberately rather than assuming.
-- [ ] No subprocess is being managed where in-process would do.
-- [ ] The server sets the error flag on failures, and failures are distinguishable from empty
-      results.
-- [ ] Destructive tools are annotated as such.
-
-## Patterns that hold up
-
-**Team server in `.mcp.json`, secrets by reference.**
+<example>
+A team server in `.mcp.json` with secrets passed by reference:
 
 ```json
 {
@@ -171,155 +145,78 @@ Everything from general tool design applies, with three MCP-specific notes:
     "code-search": {
       "type": "http",
       "url": "${SEARCH_MCP_URL:-https://search.example.com/mcp}",
-      "headers": { "Authorization": "Bearer ${SEARCH_MCP_TOKEN}" },
-      "timeout": 30000
+      "headers": { "Authorization": "Bearer ${SEARCH_MCP_TOKEN}" }
     }
   }
 }
 ```
 
-Committed to the repo, so a new hire gets both servers on clone, and no credential is in git. The
-default value gives a working URL for most developers while letting anyone point at a staging
-instance without editing a tracked file.
+Committed to the repo, so a new hire gets both servers on clone and no credential enters git. The
+remote entry sets `type` explicitly.
+</example>
 
-**An enriched description that beats the built-in fallback.**
+<example>
+A plugin-bundled server that gets its secret from `userConfig`:
 
-```text
-search_code:
-  "Semantic and symbol-aware search across the indexed monorepo (all 14 services, updated
-   every 5 minutes). Accepts a natural-language query or a symbol name, and returns ranked
-   matches with file path, line range, the enclosing symbol, and 3 lines of context.
-   Use this instead of Grep whenever the question is conceptual ('where do we validate
-   webhook signatures'), crosses service boundaries, or needs call-site context — Grep cannot
-   resolve symbols or rank by relevance. Use Grep instead for an exact literal string in a
-   file you already have open, or for anything in an unindexed path (build output, vendored
-   dependencies). Does NOT search version-control history or closed pull requests."
+```jsonc
+// .claude-plugin/plugin.json (excerpt)
+"userConfig": {
+  "ledger_token": { "type": "string", "title": "Ledger API token",
+                    "description": "Token for the ledger API", "sensitive": true, "required": true }
+}
+// .mcp.json at the plugin root
+{ "mcpServers": { "ledger": {
+  "command": "python",
+  "args": ["${CLAUDE_PLUGIN_ROOT}/servers/ledger.py"],
+  "env": { "LEDGER_TOKEN": "${user_config.ledger_token}" } } } }
 ```
 
-The model now has a decision rule rather than two similar-sounding options. Note it also says when
-*not* to use the MCP tool, which is what stops over-triggering in the other direction.
+The user is asked for the token once, and it is stored in secure storage (the macOS Keychain,
+otherwise `~/.claude/.credentials.json`), not in `settings.json`.
+</example>
 
-**Catalog as a resource, action as a tool.**
-
-```text
-Resources (browsable, attached on reference):
-  @issues:board://team-platform     -> current sprint board, all issues with status
-  @schema:db://analytics            -> table and column inventory
-
-Tools (do work):
-  issues_update_status(issue_key, status, comment)
-  issues_create(project, summary, description, type)
-```
-
-The agent reads the board as context instead of calling a list tool and then twenty get calls.
-Discovery costs zero tool calls, and the tools exist only for actions that change state.
-
-**In-process server for application-owned tools.**
-
-```ts
-import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
-
-const billing = createSdkMcpServer({
-  name: "billing",
-  version: "1.0.0",
-  tools: [
-    tool(
-      "get_subscription_context",
-      "Compile everything needed to act on one subscription: current plan, seat count, " +
-      "billing cycle, last 3 invoices with payment status, and any active credits or " +
-      "dunning state. Use at the start of any billing task instead of chaining plan, " +
-      "invoice, and credit lookups. Does NOT return payment instrument details.",
-      { accountId: z.string().describe("Internal account id, format ACCT-NNNNNN") },
-      async ({ accountId }) => ({
-        content: [{ type: "text", text: JSON.stringify(await loadContext(accountId)) }],
-      }),
-    ),
-  ],
-});
-```
-
-The tool runs in the same process as the billing code it wraps — no subprocess, no serialization
-hop, no second deployment — and the description is written to the tool-design standard rather than
-to the shape of the underlying endpoints.
-
-**Permission rules and hook matchers using the real tool names.**
+<example>
+Rules and matchers written against the real tool names:
 
 ```json
 {
   "permissions": {
-    "allow": [
-      "mcp__issues__get_*",
-      "mcp__issues__list_*",
-      "mcp__plugin_directory_people__people_get_reporting_chain"
-    ],
-    "deny": ["mcp__issues__delete_*", "mcp__*__*_write"]
+    "allow": ["mcp__issues__get_*", "mcp__plugin_directory_people__people_get_reporting_chain"],
+    "deny":  ["mcp__issues__delete_*"]
   },
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "mcp__plugin_billing_billing__charge_card",
-      "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/spend-gate.sh" }]
-    }]
-  }
+  "hooks": { "PreToolUse": [{
+    "matcher": "mcp__plugin_billing_billing__charge_card",
+    "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/spend-gate.sh" }]
+  }] }
 }
 ```
 
-Every name is in the form Claude actually emits, including the plugin-bundled shape, so the allow
-rules match and the gate fires. Wildcards appear only in the tool segment.
+Each of these fails: the matcher `"billing"`, which never fires; the allow rule `"mcp__*__get_*"`,
+which is skipped with a warning; and `"billing__charge_card"`, which has no `mcp__` prefix.
+</example>
 
 ## Failure modes
 
-**Hardcoded credentials, or personal servers in the shared file.** A literal token in a committed
-`.mcp.json` is in git history forever, and rotating it now means rewriting history or accepting
-the leak. A personal server entry pointing at a binary under one developer's home directory breaks
-every teammate's session with a connection failure, and the noise trains people to ignore MCP
-warnings.
+- **A partial override.** The winning entry is used whole, so every field you didn't restate is
+  lost.
+- **A personal server in the shared file.** A binary path under one developer's home directory
+  breaks every teammate's session.
+- **Discovery by tool call.** Listing 40 projects, then 40 issue lists, then 30 issues is 71 round
+  trips spent on a catalog that could have been a resource.
+- **Forking a community server to improve its descriptions.** Improve them at your own gateway, or
+  wrap only the tools you use. A fork falls behind upstream and has no owner.
 
-**Expecting an MCP servers key in `settings.json`, or a partial override.** The first does nothing
-at all and the server never appears, which reads as "MCP is broken." The second loses every field
-you did not restate, because the winning source's whole entry is used.
+Porting notes for other MCP clients are in [references/porting.md](references/porting.md).
 
-**Discovery by tool call instead of a resource.** Listing 40 projects, then 40 issue lists, then
-30 individual issues is 71 round trips and a window full of issue bodies before any work happens —
-for a catalog static enough to be a resource.
+## Verify
 
-**A one-line description, then blaming the model for grepping.** `search_code: "Searches code"`
-gives the model no basis to prefer an unexplained tool over one it knows well, so it grepped,
-correctly, given what it was told. Adding a system-prompt instruction competes with the
-description instead of replacing it, and removing the built-in breaks the cases it is genuinely
-better at.
+1. Run `claude mcp list` (or `/mcp` in a session). Every server shows as connected, and none shows
+   a missing-variable warning.
+2. Run `git log -p -- .mcp.json` and search it for token-shaped strings. Removing a secret now does
+   not remove it from history.
+3. Trigger one call to each gated MCP tool and confirm that the hook fires and the allow rule
+   applies. If the hook stays silent, compare the matcher with the tool name shown in the
+   transcript.
 
-**Matchers and rules on the bare server name.**
-
-```json
-{ "hooks": { "PreToolUse": [{ "matcher": "billing", "hooks": [] }] } }   // never fires
-{ "permissions": { "allow": ["mcp__*__get_*"] } }                        // glob in an allow rule's server segment
-{ "permissions": { "allow": ["billing__charge_card"] } }                 // missing mcp__ prefix
-```
-
-Matchers compare against the emitted tool name. The hook never runs, and because a hook that does
-not fire looks exactly like a hook that allowed the call, the gap is silent. Copy the exact name
-from a transcript rather than reconstructing it.
-
-**Forking a community server for description quality.** Three months later the fork is forty
-commits behind upstream with two auth bugs and no owner. You took on maintenance of someone else's
-protocol surface to fix a text problem.
-
-## Porting to other stacks
-
-- **Any MCP client** — the server itself ports unchanged; what varies is which MCP features the
-  client supports. Resources, prompts, and elicitation are not universal, so a server that
-  *requires* resources will degrade on a tools-only client. Design tools that work standalone and
-  resources as the fast path.
-- **Non-MCP tool layers** — MCP servers can be bridged, but the tool naming convention and the
-  camelCase error flag are Claude-side conventions. Normalize at the bridge and keep your own
-  error-category convention on your side of it.
-- **Anywhere** — "expose catalogs as data, not as discovery calls" and "descriptions decide
-  routing" are not protocol features. They apply to any tool layer.
-
-## Scope note
-
-MCP sampling is not documented as supported by Claude Code — treat a server that depends on it as
-unsupported until you verify. The in-process SDK helper names and signatures move between
-versions; check them against your installed SDK rather than copying the shape above verbatim. The
-same goes for the settings keys, transport aliases, and per-tool metadata flags named here.
+Without a checkout: work from the `.mcp.json`, settings and transcript excerpts the user pastes,
+and list which of these checks the user still needs to run.

@@ -187,7 +187,7 @@ PY
   then
     note checkov "ok"
   else
-    skip "checkov" "unparseable output: $(head -c 200 "$RAW/.checkov.err" | tr '\n' ' ')"
+    skip "checkov" "unparseable output: $(excerpt "$RAW/.checkov.err")"
     rm -f "$RAW/checkov.json"
   fi
   rm -f "$RAW/.checkov.parts"

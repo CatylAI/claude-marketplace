@@ -14,6 +14,9 @@
 // conversation, into a later file write, or into a pull-request description. That is worth
 // having. It is not the primary control.
 //
+// Fail direction: OPEN. The command has already run; any error exits 0 so a successful
+// command is never reported as failed.
+//
 // Only TOKEN_PATTERNS are used here. CONTENT_PATTERNS match the shape of an ASSIGNMENT, which
 // appears constantly in legitimate command output — a `grep` for a hardcoded credential, a
 // `terraform plan` diff, a review note reporting one. Redacting those would corrupt the output
@@ -21,7 +24,7 @@
 
 import { readStdin } from './lib/stdin.ts';
 import { info } from './lib/output.ts';
-import { findSecrets, redactSecrets, containsPlaceholder } from './lib/secrets.ts';
+import { findSecrets, redactSecrets } from './lib/secrets.ts';
 import type { BashToolOutput } from './lib/types.ts';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,11 +65,9 @@ export function evaluateBashOutput(response: unknown): RedactionResult {
         .filter((v): v is string => typeof v === 'string')
         .join('\n');
 
-  const combined = scanTarget;
-  if (containsPlaceholder(combined)) {
-    // Already redacted (a re-fired hook, or a replayed transcript). Do nothing.
-    return { updated: null, notice: null };
-  }
+  // No early return on an existing placeholder. Redaction is already idempotent (the
+  // placeholder cannot match a pattern), and a blanket "already redacted" skip let a fresh
+  // secret through whenever the same output also quoted an old placeholder.
 
   const outResult = redactSecrets(stdout);
   const errResult = redactSecrets(stderr);

@@ -261,9 +261,11 @@ test('the working tree is not consulted for a plain push', () => {
   assert.equal(called, false);
 });
 
-test('checkout -- and restore . are blocked', () => {
-  assert.ok(evaluateGitForce('git checkout -- .', undefined, deps()));
-  assert.ok(evaluateGitForce('git restore .', undefined, deps()));
+test('checkout -- and restore . are blocked on a dirty tree', () => {
+  // On a clean tree there is nothing to lose, so they are allowed: see pre-bash-bypass.test.ts.
+  const dirty = deps({ isWorkingTreeClean: () => false });
+  assert.ok(evaluateGitForce('git checkout -- .', undefined, dirty));
+  assert.ok(evaluateGitForce('git restore .', undefined, dirty));
 });
 
 // ---------------------------------------------------------------------------------------
@@ -371,11 +373,12 @@ describe('evaluateCommitOnProtected', () => {
 // ---------------------------------------------------------------------------------------
 
 describe('the smaller guards', () => {
-  it('blocks a bare terraform init and allows the sanctioned forms', () => {
-    assert.ok(evaluateTerraformBackend('terraform init'));
-    assert.equal(evaluateTerraformBackend('terraform init -backend-config=backends/dev.tfbackend'), null);
-    assert.equal(evaluateTerraformBackend('terraform init -upgrade -backend=false'), null);
-    assert.equal(evaluateTerraformBackend('terraform plan'), null);
+  it('blocks a bare terraform init on a partial backend and allows the sanctioned forms', () => {
+    const partial = { readTerraformFiles: () => ['terraform {\n  backend "s3" {}\n}'] };
+    assert.ok(evaluateTerraformBackend('terraform init', '/work', partial));
+    assert.equal(evaluateTerraformBackend('terraform init -backend-config=backends/dev.tfbackend', '/work', partial), null);
+    assert.equal(evaluateTerraformBackend('terraform init -upgrade -backend=false', '/work', partial), null);
+    assert.equal(evaluateTerraformBackend('terraform plan', '/work', partial), null);
   });
 
   it('blocks the TTY-only pipeline viewers and allows their non-interactive siblings', () => {
@@ -453,6 +456,81 @@ describe('evaluateSecretPrint', () => {
     assert.equal(evaluateSecretPrint('cut -d= -f1 .env'), null);
     // Searching FOR the word is not reading a credential file.
     assert.equal(evaluateSecretPrint('grep -rn credentials docs/'), null);
+  });
+
+  it('blocks printing Snowflake connection files and .p8 private keys', () => {
+    for (const cmd of [
+      'cat ~/.snowflake/connections.toml',
+      'cat "$HOME/.snowflake/config.toml"',
+      'head -20 ~/.snowflake/connections.toml',
+      'grep password ~/.snowflake/connections.toml',
+      'cat snowflake_key.p8',
+      'cat ~/.snowflake/keys/*.p8',
+      'base64 < ~/.snowflake/keys/agent.p8',
+      // Case-insensitive extension, and connections.toml wherever $SNOWFLAKE_HOME puts it.
+      'cat KEY.P8',
+      'cat ~/.snowflake/keys/Agent.P8',
+      'cat $SNOWFLAKE_HOME/connections.toml',
+      'less /opt/snow/connections.toml',
+    ]) {
+      const d = evaluateSecretPrint(cmd);
+      assert.ok(d, cmd);
+      assert.equal(d.rule, 'credential-file-print', cmd);
+    }
+  });
+
+  it('does not block ordinary work near Snowflake files', () => {
+    for (const cmd of [
+      // The public half is meant to be read and pasted into ALTER USER.
+      'cat ~/.snowflake/keys/agent.p8.pub',
+      'cat ~/.snowflake/keys/agent.pub',
+      // Counting and name-only idioms, and a config.toml outside ~/.snowflake.
+      'grep -c . ~/.snowflake/connections.toml',
+      'cat pyproject/config.toml',
+      // Searching FOR the extension is not reading a key.
+      'grep -rn "\\.p8" .gitignore',
+      'snow connection list',
+      'cat ~/.snowflake/keys/AGENT.P8.PUB',
+      'grep -c . $SNOWFLAKE_HOME/connections.toml',
+      'cat connections.toml.example',
+      // Known gap, by design: interpreters are out of scope (dev-guardrails README,
+      // "What these hooks are, and are not").
+      'python3 -c "print(open(\'/root/.snowflake/connections.toml\').read())"',
+    ]) {
+      assert.equal(evaluateSecretPrint(cmd), null, cmd);
+    }
+  });
+
+  it('blocks openssl writing a private key to stdout', () => {
+    for (const cmd of [
+      'openssl pkey -in ~/.snowflake/keys/agent.p8',
+      'openssl rsa -in ~/.snowflake/keys/agent.p8',
+      'openssl pkey -in key.pem -text -noout',
+      'openssl pkcs8 -in key.p8 -out /dev/stdout',
+      'openssl genrsa 2048',
+      'openssl genrsa 2048 | cat',
+      'openssl pkey < key.p8',
+    ]) {
+      const d = evaluateSecretPrint(cmd);
+      assert.ok(d, cmd);
+      assert.equal(d.rule, 'private-key-print', cmd);
+    }
+  });
+
+  it('allows openssl calls that print only public or no key material', () => {
+    for (const cmd of [
+      'openssl rsa -in ~/.snowflake/keys/agent.p8 -pubout -out ~/.snowflake/keys/agent.pub',
+      'openssl pkey -in key.p8 -pubout',
+      'openssl rsa -pubin -in agent.pub -outform DER | openssl dgst -sha256 -binary | openssl enc -base64',
+      'openssl rsa -in key.p8 -check -noout',
+      'openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake/keys/agent.p8',
+      'openssl pkey -in key.p8 > new.pem',
+      'openssl x509 -in cert.pem -text -noout',
+      'openssl dgst -sha256 file.txt',
+      `openssl pkey -in key.p8 ${SECRET_PRINT_ALLOW_MARKER}`,
+    ]) {
+      assert.equal(evaluateSecretPrint(cmd), null, cmd);
+    }
   });
 
   it('honours the escape marker on the rules that have one, but not on env-dump', () => {
@@ -558,4 +636,39 @@ describe('pre-bash.ts as Claude Code runs it', () => {
     );
     assert.equal(r.status, 0);
   });
+
+  it('blocks a command too long to check inside the timeout', () => {
+    // A generated command far larger than any hand-typed one: parsing it could outrun the
+    // hook timeout, and a timed-out hook lets the command PROCEED. So it is denied outright.
+    const huge = 'echo ' + 'x'.repeat(70 * 1024) + ' && git push -f';
+    const r = runHook(huge);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /too long to check/);
+  });
+
+  it('a normal-size command with many substitutions still finishes fast', () => {
+    const many = 'echo ' + '$(date) '.repeat(4000) + '; git push -f';
+    const started = Date.now();
+    assert.equal(runHook(many).code, 2); // still blocked (the force push is seen)
+    assert.ok(Date.now() - started < 8000, 'parsing regressed to quadratic');
+  });
+
+  for (const [label, stdin] of [
+    ['empty stdin', ''],
+    ['not JSON', 'not json at all'],
+    ['JSON null', 'null'],
+    ['JSON array', '[]'],
+    ['JSON number', '5'],
+    ['a non-string command', JSON.stringify({ tool_name: 'Bash', tool_input: { command: 5 } })],
+    ['a non-object tool_input', JSON.stringify({ tool_name: 'Bash', tool_input: 'x' })],
+  ] as const) {
+    it(`does not crash on ${label} — it allows and exits 0`, () => {
+      const r = spawnSync(
+        process.execPath,
+        ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', PRE_BASH],
+        { input: stdin, encoding: 'utf-8' },
+      );
+      assert.equal(r.status, 0, `exit ${r.status}: ${r.stderr}`);
+    });
+  }
 });

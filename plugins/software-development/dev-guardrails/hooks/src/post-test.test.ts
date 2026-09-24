@@ -5,9 +5,10 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldRunTests, testCandidates } from './post-test.ts';
+import { jsRunnerCommand, shouldRunTests, testCandidates } from './post-test.ts';
 
-const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'post-test.ts');
+// post-test is a stage of the consolidated PostToolUse hook, so it runs through that entry.
+const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'post-write-edit.ts');
 
 describe('shouldRunTests', () => {
   const COOLDOWN = 3 * 60 * 1000;
@@ -58,7 +59,21 @@ describe('testCandidates', () => {
   });
 });
 
-describe('post-test.ts as Claude Code runs it', () => {
+describe('jsRunnerCommand', () => {
+  it('uses only a runner installed in the project, never npx', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'pt-runner-'));
+    writeFileSync(join(repo, 'vitest.config.ts'), 'export default {};\n');
+    assert.equal(jsRunnerCommand(repo, 'a.test.ts'), null, 'configured but not installed: skip');
+    mkdirSync(join(repo, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', '.bin', 'vitest'), '');
+    assert.deepEqual(jsRunnerCommand(repo, 'a.test.ts'), [
+      join(repo, 'node_modules', '.bin', 'vitest'),
+      ['run', 'a.test.ts'],
+    ]);
+  });
+});
+
+describe('the test stage, as Claude Code runs it', () => {
   function run(payload: unknown, env: Record<string, string> = {}) {
     return spawnSync(
       process.execPath,

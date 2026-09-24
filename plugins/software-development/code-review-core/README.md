@@ -10,74 +10,147 @@ belongs in a separate plugin.
 ## When to use it
 
 - Reviewing a branch against its merge base, locally or in CI, with no credentials of any kind.
-- Getting the deterministic linter pass over only the files a branch changed, without spending
-  tokens on it.
+- Running the linter pass over only the files a branch changed, without spending tokens on it.
 - Building a review gate whose verdict a script can read: `.code-review/VALIDATED.json`.
+- Reviewing on GitLab, or anywhere the result has to reach a forge through a separate transport.
 
 ## When not to use it
 
-- You need findings posted to a pull request or merge request. That is a transport plugin's job;
-  this one only writes files.
-- You want a chat-style "review my code" conversation. This is a pipeline with a machine-readable
-  contract, not a conversation.
+- For a quick, conversational review of a diff, use the built-in `/code-review`. It is cheaper and
+  can post PR comments itself. This plugin is for when you need the deterministic scan, the gated
+  agents, and a verdict file.
+- To post findings to a pull or merge request, use a transport (see Consumers below). This plugin
+  only writes files.
 
 ## Surfaces
 
-**This plugin is Claude Code only.** It is the one place in this marketplace where that is
-true of the whole plugin rather than a part of it, and it is worth being explicit about why.
+**Claude Code only: CLI, desktop, and Claude Code on the web.** The pipeline is shell scripts over
+a git checkout, and the judgement stage is subagents. It does not work in Cowork, which has no
+checkout to diff.
 
-The pipeline is shell scripts over a `git` checkout, and the judgement stage is five subagents.
-Cowork (Claude Code on the web) has neither a shell nor a checkout, and does not run subagents.
-There is no degraded mode to fall back to: without `git diff` there is nothing to detect, and
-without the agents there is no verdict. A review that silently produced no findings because it
-could not run would be worse than no review, so the plugin does not pretend to offer one.
+On the web, the scripts run, but most linters are usually not installed there. Each missing tool is
+recorded as a skip in `SCAN-SUMMARY.md` rather than hidden. Without a checkout, both skills say so
+and point to `/code-review` on a pasted diff. They do not imitate a result.
 
-The `review-scan` skill and `SKILL.md` remain readable on the web as documentation.
+## Running it
 
-## Layout
+| Entry point | What it does |
+| --- | --- |
+| `/code-review-core:review [base-ref] [--effort low\|medium\|high]` | the whole pipeline, ending in `VALIDATED.json` |
+| `/code-review-core:review-scan [base-ref]` | the detection pass only, ending in `SCAN.json` |
 
-```
-code-review-core/
-├── SKILL.md                         the pipeline contract and how the stages compose
-├── agents/
-│   ├── review-semantic.md           business logic, authz, concurrency, error paths
-│   ├── review-testing.md            test quality — gated
-│   ├── review-architect.md          design and DRY — gated
-│   ├── review-authoring-conformance.md  Claude Code authoring conformance — gated
-│   └── review-validator.md          re-reads every cited line; owns the verdict
-├── pipeline/
-│   ├── review-scan.sh               the zero-token detection pass
-│   ├── prepare-context.sh           runs the scan, bounds the diff, decides the gates
-│   ├── detectors/                   one script per tool family, dispatched by review-scan.sh
-│   │   ├── python.sh · shell.sh · terraform.sh · secrets.sh · impact.sh
-│   │   ├── deps.sh · comments.sh    dependency pinning, and the mechanical half of comment quality
-│   │   ├── detectors.test.sh        the shared detector contract, over every detector on disk
-│   │   └── terraform.test.sh · deps.test.sh · comments.test.sh   each detector's own arms
-│   ├── normalize.py                 folds every tool's output into one AgentContract
-│   ├── filter-carried-findings.py   intersects each cited line against the diff's @@ hunks
-│   ├── contract.py                  the finding contract as executable rules, not prose
-│   ├── testpaths.py                 the one test-path regex both scripts share
-│   ├── _lib.sh                      shared shell helpers
-│   ├── *.test.sh                    one companion suite per script; see Tests below
-│   └── schemas/                     generated from contract.py; a build artifact, never hand-edited
-└── skills/
-    └── review-scan/                 user-invocable wrapper for the detection pass
-```
-
-## Quick start
+With no base ref, both use `origin/HEAD`, then `origin/main`, then `origin/master`. In CI, call the
+scripts directly:
 
 ```bash
 PIPE="$CLAUDE_PLUGIN_ROOT/pipeline"
 
-# Detection only — reports, never enforces, exits 0 whatever it finds
-"$PIPE/review-scan.sh" --base origin/main
+# Detection only: reports, never enforces, exits 0 whatever it finds
+bash "$PIPE/review-scan.sh" --base origin/main
 
 # Detection plus the bounded context the judgement agents read
-"$PIPE/prepare-context.sh" --base origin/main
+bash "$PIPE/prepare-context.sh" --base origin/main
 ```
 
 Everything lands in `.code-review/`, which gets its own `.gitignore` (`*`) on creation so the
 artifacts cannot be committed by accident. Delete that file if you want them committable.
+
+## The shape of a review
+
+The stages communicate only through files in `.code-review/`, so each one can run and be tested
+on its own.
+
+```
+1. DETECT    pipeline/review-scan.sh
+             11 linters and scanners, plus dependency pinning, commented-out code, changed-symbol impact
+             -> SCAN.json, SCAN-SUMMARY.md          (no tokens; reports, never enforces)
+
+2. BOUND     pipeline/prepare-context.sh
+             runs the scan, caps the diff, decides which gated agents spawn
+             -> CONTEXT.json, DIFF.md
+
+3. JUDGE     review-semantic                 always                 -> SEMANTIC.json
+             review-testing                  testing.spawn          -> TESTING.json
+             review-architect                architect.spawn        -> ARCHITECTURE.json
+             review-authoring-conformance    claude_config.spawn    -> CLAUDE_CONFIG.json
+             (in parallel)
+
+4. VALIDATE  review-validator                re-reads every cited line -> VALIDATOR-DECISIONS.json
+
+5. FINALIZE  pipeline/contract.py finalize   deterministic merge   -> VALIDATED.json, VALIDATED.md
+```
+
+The `review` skill runs all five in order. If a stage fails, the review ends as `INCOMPLETE` with the
+reason stated, never as a clean result.
+
+### Write guard
+
+The judge and validator agents need `Write` for their artifacts, and agent frontmatter cannot scope
+it to a path. `hooks/hooks.json` registers a `PreToolUse` hook on `Write|Edit|NotebookEdit` that runs
+`hooks/guard-review-writes.py` (python3, standard library only). When the calling agent's
+`agent_type` starts with `code-review-core:review-` and the target resolves (after `..` and symlinks)
+outside a `.code-review/` directory, it denies the call and tells the agent where to write instead.
+Every other call, including the main session and other plugins' agents, passes through untouched,
+so the hook never affects normal work. If the hook input cannot be parsed, it allows the call and
+prints a note on stderr: blocking every write in every session on a malformed input would do more
+harm than the prompt-level limit it backs up. A custom `--out` not named `.code-review` is outside
+the guard's allowance, so the `review` skill always uses the default.
+
+### Why it is built this way
+
+- **Deterministic first.** A linter beats a model at grep-shaped detection and costs nothing per run,
+  so agent budget goes only to business logic, authorization, concurrency, error paths, test adequacy
+  and design.
+- **Bounded context.** `prepare-context.sh` caps the diff and records what it left out. An agent
+  reading an unbounded repository spends its turns on orientation.
+- **Deterministic gates, not self-assessment.** Whether the architect, testing or
+  authoring-conformance agent runs is decided by `prepare-context.sh`, with a recorded reason, before
+  the agent exists.
+- **One owner of the verdict.** Agents write findings. The validator records its judgements, and the
+  deterministic `finalize` step alone writes the verdict. Findings that nobody re-read are proposals,
+  not results.
+
+### Where the findings come from
+
+In repos that already run the same linters at pre-commit, the scan's diff-scoped yield is near zero,
+because those gates already passed. The saving is real, but it was banked earlier. The layering that
+follows:
+
+| Layer | Owns |
+| --- | --- |
+| pre-commit | ruff, pylint, shellcheck, gitleaks, trivy: already installed and blocking |
+| CI | pytest and coverage JSON, published as artifacts the scan ingests |
+| `review-scan.sh` | mypy, impact, and whatever is not enforced upstream |
+| `review-semantic` | the judgement lenses, where most real findings come from |
+
+## Consumers and contract
+
+`VALIDATED.json` is the only output other plugins read. Its shape is part of this plugin's public
+interface.
+
+- **Completion signal.** `.code-review/VALIDATED.json` present and parseable means the run
+  finished. An unfinished run leaves an `INCOMPLETE` document or none at all, never a clean one.
+- **Schema.** Findings and documents are defined in `pipeline/contract.py`, generated into
+  `pipeline/schemas/agent-contract.schema.json`, and documented for agents in
+  `dev-standards:agent-contracts`.
+- **Verdict.** One of `APPROVE`, `REQUEST_CHANGES` or `INCOMPLETE`, computed by `rollup_verdict` in
+  `pipeline/contract.py`.
+- **Finding axes.** `severity`, `in_diff` and `confidence` are independent; what each value means
+  is owned by `dev-standards:code-review-standards`.
+- **Blocking floor.** `--floor` on finalize, else `CODE_REVIEW_BLOCKING_FLOOR`, else `MINOR`. The
+  floor used is recorded in `VALIDATED.json`.
+- **Finding marker.** Transports tag every posted comment with a fingerprint of the finding's path
+  and normalised title (`<!-- code-review-core:fp2:<path>:<title> -->`, grammar in
+  `github-workflow:review-transport`), not with its id: `finalize` renumbers ids on every run, so an
+  id cannot tell a re-run which findings are already posted.
+
+Current consumers:
+
+| Plugin | Skill | Does |
+| --- | --- | --- |
+| `github-workflow` | `github-workflow:review-transport` | posts one GitHub PR review; the event follows the verdict |
+| `gitlab-workflow` | `gitlab-workflow:review-transport` | posts inline MR discussions and a summary note |
+| `terraform-aws` | `terraform-aws:terraform-review` | relies on the `terraform` detector and does not repeat its checks |
 
 ## Detectors
 
@@ -86,9 +159,10 @@ artifacts cannot be committed by accident. Delete that file if you want them com
 | `python` | ruff, bandit, mypy, pylint | also ingests `raw/pytest.json` + `raw/coverage.json` if CI drops them in; never runs the suite itself |
 | `shell` | shellcheck | `.sh`/`.bash`/`.zsh` plus extensionless files with a shell shebang |
 | `terraform` | terraform fmt, tflint, checkov, tfsec | `.tf`/`.tfvars`/`.hcl`; `terraform validate` is never run — it needs `init`, and a review scan authenticates nowhere |
-| `secrets` | gitleaks, trivy | always runs when anything changed; both always `--redact` |
+| `secrets` | gitleaks, trivy | always runs when anything changed; gitleaks runs with `--redact`, trivy masks secret values itself |
 | `deps` | its own | unpinned dependencies in `package.json`, `requirements*.txt`, `pyproject.toml`, `Dockerfile`, `.github/workflows/*`, `.pre-commit-config.yaml`; selected by path shape, not extension |
 | `comments` | its own | blocks of commented-out code, and `TODO`/`FIXME`/`XXX` with no tracked reference — both NIT |
+| `iac-policy` | its own | Terraform, CI pipelines, Makefiles, `.sql` migrations: `-target` in automation, `dynamodb_table` locking, a default on `environment`/`account_id`/`vpc_id`, undocumented variables, OIDC trust with no `:sub`, `StringLike` with no wildcard, `iam:PassRole` on `"*"`, non-concurrent `CREATE INDEX` on PostgreSQL. Text rules that under-report; none emits BLOCKER |
 | `impact` | git grep | removed/renamed/signature-changed symbols → consumers outside the diff, as NIT |
 
 `deps` is the one detector with a real supply-chain argument rather than a reproducibility one. An
@@ -108,10 +182,11 @@ detector actually produced output, because a `--detectors python` scan with the 
 nothing in its place would be a silent loss of coverage. The suppression is counted and printed in
 `SCAN-SUMMARY.md` like every other.
 
-Every tool that could not run is recorded as an explicit skip in `SCAN-SUMMARY.md` rather than
-silently omitted — a missing binary, an unparseable output, a diff with none of that detector's file
-types. A scan with four of nine tools present looks exactly like a clean scan unless the gaps are
-stated, so they always are, and detectors always exit 0 so a gap can never fail a review.
+Seven detectors cover 11 external tools, plus `git grep` and two built-in checks. Every tool that
+could not run is recorded as an explicit skip in `SCAN-SUMMARY.md` rather than silently left out:
+a missing binary, an unparseable output, or a diff with none of that detector's file types. A scan
+with half its tools missing looks exactly like a clean scan unless the gaps are stated, so they
+always are. Detectors always exit 0, so a gap can never fail a review.
 
 TS/JS coverage is thin on purpose: neither `semgrep` nor `eslint` is assumed present and `tsc` needs
 the project's `node_modules`, so TS/JS files get `secrets` + `impact` only — and the scan says so.
@@ -121,7 +196,8 @@ the project's `node_modules`, so TS/JS files get `secrets` + `impact` only — a
 - **Secret findings never carry the source line as evidence.** For every other tool `evidence` is the
   cited line read off disk. For a secret finding that line *is* the credential, and copying it into
   `SCAN.json` puts a live secret into a file an agent reads and may quote. Secret findings get a
-  fixed redaction notice instead, and the detectors pass `--redact` so `raw/` is clean too.
+  fixed redaction notice instead. gitleaks runs with `--redact` and trivy masks matched secrets in its
+  own output, so `raw/` is clean too.
 - **`gitleaks` is invoked one file per run.** Handing it several paths makes it ignore all but the
   first and scan that path's whole tree — measured as an 8.16 MB scan where the target was 99 bytes.
 - **Range findings are emitted as enumerated lines.** A tool reporting a resource block as
@@ -131,8 +207,8 @@ the project's `node_modules`, so TS/JS files get `secrets` + `impact` only — a
   did not exist before it.
 - **Tools are invoked directly, not through `pre-commit`.** `pre-commit` would give many hooks free
   but emits text, which puts an LLM back in the parsing loop — the exact cost this removes.
-- **checkov is invoked once per changed IaC directory.** Measured against checkov 3.2.x, a single
-  run carrying several `-d` flags reports *every* finding under the first directory's path, so a
+- **checkov is invoked once per changed IaC directory.** When measured (re-check against the current
+  checkov release before relying on it), a single run carrying several `-d` flags reports *every* finding under the first directory's path, so a
   second module's violations arrive attributed to a file that does not contain them. checkov and
   tfsec are directory-oriented in the first place because a lone `.tf` file rarely parses without
   the siblings declaring its variables.
@@ -154,6 +230,8 @@ bash "$PIPE/detectors/detectors.test.sh"      # the detector contract, over ever
 bash "$PIPE/detectors/terraform.test.sh"      # the IaC detector's own arms
 bash "$PIPE/detectors/deps.test.sh"           # the pinning rules, and the pinned-is-silent half
 bash "$PIPE/detectors/comments.test.sh"       # the comment rules, and the prose-is-silent half
+bash "$PIPE/detectors/iac-policy.test.sh"     # the Terraform/IAM/migration rules, and their silent cases
+bash "$CLAUDE_PLUGIN_ROOT/hooks/guard-review-writes.test.sh"   # the write guard: deny, allow, other agents, fail-open
 ```
 
 Each suite also runs under `zsh`, which is half of what "portable bash 3.2+ / zsh" is asserting.
@@ -172,8 +250,13 @@ assumed.
 
 ## Dependencies
 
-`dev-standards`, for the `code-review-standards`, `file-scope-rules` and `agent-contracts` skills the
-agents inject by name.
+`dev-standards`, for the skills the agents preload by their namespaced names
+(`dev-standards:code-review-standards`, `dev-standards:agent-contracts`, and others). The shared
+judge rules live in this plugin's own `judge-protocol` skill, which the agents preload as
+`code-review-core:judge-protocol`; it is not user-invocable. The pipeline scripts need none of them.
+If a `dev-standards` skill is missing, Claude Code skips the preload with only a debug-log warning:
+the agents lose the finding keys, the severity table and the scope rules, and nothing in the
+verdict reports it (finalize still repairs or rejects malformed findings). Install `dev-standards` alongside this plugin.
 
 ## License
 

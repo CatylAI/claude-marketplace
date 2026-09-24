@@ -26,8 +26,8 @@ exists — MUST carry `testpaths.py` alongside `prepare-context.sh`. If it does 
 loud `ModuleNotFoundError` and `prepare-context` dies rather than silently falling back to a local
 regex, which is the right direction: a missing predicate must not be resolved by guessing.
 
-`scripts/check-untested-behavior.sh` in the catalog root imports this module too, by deriving the
-review plugin rather than naming it, for exactly the same reason: one definition of "is this a test".
+`normalize.py` imports it too, for the bandit B101 (assert-in-test) suppression, so the scanner
+and the review context agree on which files are tests.
 
 No shebang: imported, never executed.
 """
@@ -36,13 +36,15 @@ from __future__ import annotations
 
 import re
 
-# The UNION of the two spellings that used to disagree. `e2e/` and `.test.<ext>` are the two things
-# the narrower copy was missing.
+# The UNION of the two spellings that used to disagree (`e2e/` and `.test.<ext>` are the two things
+# the narrower copy was missing), plus `conftest.py`, which normalize.py's old local copy knew about.
 TEST_PATH = re.compile(
     r"(^|/)(tests?|spec|__tests__|e2e)/"
     r"|(^|/)test_[^/]+$"
     r"|_test\.[a-z]+$"
     r"|\.(test|spec)\.[a-z]+$"
+    # pytest's shared-fixture file. It holds asserts and fixtures, never production behaviour.
+    r"|(^|/)conftest\.py$"
 )
 
 # Documentation, by suffix and by top-level directory. `benchmarks/` is here because its contents are

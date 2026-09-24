@@ -1,72 +1,65 @@
 # project-scaffold
 
-Bootstrap a project and run a proof of concept that ends in a decision.
-
-Two jobs, one plugin:
-
-- **Start a repo well** — scaffold an empty directory into a working local skeleton,
-  generate a CLAUDE.md hierarchy, audit the repo's own `.claude/` wiring, and write down the
-  architectural decisions the code already encodes as ADRs.
-- **Run a POC honestly** — state the question and the kill criteria up front, check the
-  evidence against them, then graduate the work or kill it.
-
-Everything here is stack-neutral and forge-neutral. No language, cloud, CI system, agent
-framework, or hosting runtime is assumed or mandated. Where a choice matters, the skill asks.
+Start a new project well, record the decisions a codebase already makes, and run a proof of
+concept that ends in a decision.
 
 ## Skills
 
 | Skill | Purpose |
 | --- | --- |
-| `project-create` | Router. Inspects the directory, asks at most two questions, and names exactly one of the skills below. Writes nothing itself. |
-| `project-new` | Scaffold an empty directory into a full local skeleton: CLAUDE.md hierarchy, Makefile, `.pre-commit-config.yaml`, README, `.gitignore`, and an initial commit. Local only. |
-| `project-init` | Generate a customized CLAUDE.md hierarchy (root, source, infrastructure) for a repo that already has code. |
-| `adr-init` | Survey a repo, extract the decisions already made, and propose a `docs/adr/` set — writing nothing until you approve. |
-| `project-hooks` | Audit and repair a repo's local Claude Code configuration: CLAUDE.md quality, `.claude/settings.json` hygiene, project agents and skills. |
-| `poc-start` | Write the POC contract: the question, the falsifiable success signal, the kill criteria, the time box, the chosen stack and target runtime. |
-| `poc-validate` | Read-only check of a POC against its own contract. Reports met / unmet / unmeasurable per criterion. |
-| `poc-graduate` | Close the POC out: promote to a real project on the target runtime chosen at start, or kill it and record why. |
+| `project-new` | Scaffold an empty directory into a runnable local project: manifest, Makefile, pre-commit, lean CLAUDE.md, README, `.gitignore`, first commit. Local only; Claude Code only. |
+| `adr-init` | Survey a repo, extract the decisions it already embodies, and write `docs/adr/` plus its index after you approve the list. Run it as `/project-scaffold:adr-init`. |
+| `poc-start` | Write the POC contract (question, success signal, kill criteria, time box, target runtime) to `.poc/poc.json`, then scaffold the minimum. |
+| `poc-validate` | Read-only check of a POC against its own contract: MET / NOT MET / UNMEASURED per criterion, drift, and a GRADUATE / KILL / EXTEND recommendation. |
+| `poc-graduate` | Close the POC: apply `poc-validate`'s checks as a gate, then write a production plan or a kill record, and mark the contract closed. |
 
-## Agents
+For a repository that already has code, use the built-in `/init` to generate CLAUDE.md and
+`claude-craft:config-audit` to audit its Claude Code configuration.
 
-- `poc-guardian` — read-only plan reviewer. Checks a proposed plan against the POC's own
-  contract (in-scope for the question, within the time box, measurable against the kill
-  criteria) and returns `APPROVED`, `BLOCKED`, or `NEEDS_EVIDENCE`.
+## Agent
+
+`adr-currency-validator` is a read-only completion gate. It checks that a change which alters
+an architectural decision added or amended the matching `docs/adr/` file and index row, in
+the format `adr-init` writes, and returns `VERDICT: PASS`, `DRIFT`, `SKIP` or `NO_VERDICT`.
+Claude Code only (subagent); on the web, check ADR currency by hand before review.
+
+## Toolchain defaults
+
+`project-new` scaffolds Python with `uv` and TypeScript with `npm`, and Terraform with one
+Makefile target per environment. Those are the only managers it writes; for another, scaffold
+by hand or adapt the result. Pre-commit comes from `dev-standards:precommit-standards` and its
+baseline config.
 
 ## Templates
 
-`templates/claude-md/` ships the CLAUDE.md templates `project-init` and `project-new` fill
-in: `root.md`, `src.md`, and `infra.md`. They use `${PLACEHOLDER}` tokens that the skill substitutes from
-detected project facts. Edit them to match your own house style — the skill reads whatever
-is in that directory.
+`templates/claude-md/` holds what `project-new` fills in:
 
-## What this plugin does not do
+- `root.md` — a short root `CLAUDE.md`: commands, the `verify` contract, a Gotchas section.
+- `infra.md` — written to `.claude/rules/infrastructure.md` with `paths:` frontmatter, so it
+  loads only when Claude works on infrastructure files.
 
-- It never creates a remote repository, pushes, sets branch protection, or opens a merge
-  or pull request. Forge operations belong to a forge-specific plugin — see
-  `github-workflow` for pull request lifecycle and GitHub Actions authoring. `project-new`
-  stops at the first local commit.
-- It never dictates the POC's stack. A proof of concept exists to answer a question; the
-  tools it uses are the author's choice.
-- It never writes a `rules/` directory or other non-native configuration.
+Edit them to match your house style; `project-new` reads whatever is there. Personal notes
+belong in a gitignored `CLAUDE.local.md`, which `project-new` adds to `.gitignore`.
 
 ## Surfaces
 
-Skills load in both Claude Code and Cowork (Claude Code on the web). **`poc-guardian` is a
-subagent and is Claude Code only** — in Cowork the plan review it performs has to be done in
-the main thread, which means it is no longer an independent check by a reviewer that cannot
-see the plan's author reasoning.
+The skills load in Claude Code and Cowork (web). `project-new` needs a shell and is Claude Code
+only; on the web it drafts the files for you to create. `adr-init` and the POC skills work from
+pasted content on the web and hand back file contents to save. `adr-currency-validator` is a
+subagent and runs in Claude Code only.
 
-Every skill here begins by reading repo state — `git`, existing files, `.claude/` wiring. On
-the web there is no checkout and no shell, so they work from what you paste into the
-conversation. `adr-init`, `project-init` and `project-new` can still draft their output
-there; you write the files yourself, and `project-new` cannot make its initial commit.
-`project-create` routes fine on the web, since routing needs the directory description more
-than the directory itself.
+## What this plugin does not do
+
+It never creates a remote, pushes, sets branch protection, or opens a pull or merge request;
+that belongs to `github-workflow` or `gitlab-workflow`. It never dictates a POC's stack.
 
 ## Prerequisites
 
-- `git`, for the repo-state checks most skills begin with.
-- The `dev-standards` plugin, for the `standards-first` skill the `poc-guardian` agent loads.
+- `git` and `make` for `project-new`, plus `uv` (Python), `npm` (TypeScript) or `terraform`
+  (Terraform); `pre-commit` for its hooks. Optional: `terraform-docs`, without which
+  `project-new` leaves the `terraform_docs` hook commented out.
+- The `dev-standards` plugin, for `precommit-standards`.
+- Optional: `claude-craft`, for `config-audit`.
 
 ## Install
 

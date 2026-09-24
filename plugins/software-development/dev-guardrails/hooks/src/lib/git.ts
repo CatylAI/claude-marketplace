@@ -8,24 +8,31 @@
 // Nothing here throws. A missing git, a directory that is not a repo, and a timeout all
 // degrade to the conservative answer rather than crashing the hook: a hook that throws
 // is a hook that gets uninstalled.
+//
+// Every call spawns git with an ARGV array, never a shell string. Nothing interpolated
+// into a git call can become shell syntax, and skipping `/bin/sh` saves a process on
+// every Bash tool call. The 5-second timeout bounds each call; the callers run on the
+// PreToolUse path, where a hung git would stall the tool call.
 
-import { execSync, type ExecSyncOptionsWithStringEncoding } from 'node:child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process';
 
-function gitOpts(cwd?: string): ExecSyncOptionsWithStringEncoding {
-  const opts: ExecSyncOptionsWithStringEncoding = {
+const GIT_TIMEOUT_MS = 5_000;
+
+function git(args: string[], cwd?: string): string {
+  const opts: ExecFileSyncOptionsWithStringEncoding = {
     encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 5_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
   };
-  // Only set cwd when given, so execSync inherits the process cwd otherwise.
+  // Only set cwd when given, so git inherits the process cwd otherwise.
   if (cwd) opts.cwd = cwd;
-  return opts;
+  return execFileSync('git', args, opts);
 }
 
 /** The checked-out branch, or `detached` when there is none (or no repo at all). */
 export function getBranch(cwd?: string): string {
   try {
-    return execSync('git branch --show-current', gitOpts(cwd)).trim() || 'detached';
+    return git(['branch', '--show-current'], cwd).trim() || 'detached';
   } catch {
     return 'detached';
   }
@@ -34,7 +41,7 @@ export function getBranch(cwd?: string): string {
 /** True when `cwd` (or the process cwd) sits inside a git repository. */
 export function isGitRepo(cwd?: string): boolean {
   try {
-    execSync('git rev-parse --git-dir', gitOpts(cwd));
+    git(['rev-parse', '--git-dir'], cwd);
     return true;
   } catch {
     return false;
@@ -70,7 +77,7 @@ const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
  */
 export function getBaseBranch(cwd?: string): string | null {
   try {
-    const ref = execSync('git symbolic-ref --quiet refs/remotes/origin/HEAD', gitOpts(cwd)).trim();
+    const ref = git(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], cwd).trim();
     const name = ref.replace(/^refs\/remotes\/origin\//, '');
     // Guard against an unexpected shape: only accept it if the prefix actually stripped.
     if (name && name !== ref) {
@@ -81,11 +88,11 @@ export function getBaseBranch(cwd?: string): string | null {
   }
 
   try {
-    execSync('git show-ref --verify --quiet refs/heads/main', gitOpts(cwd));
+    git(['show-ref', '--verify', '--quiet', 'refs/heads/main'], cwd);
     return 'main';
   } catch {
     try {
-      execSync('git show-ref --verify --quiet refs/heads/master', gitOpts(cwd));
+      git(['show-ref', '--verify', '--quiet', 'refs/heads/master'], cwd);
       return 'master';
     } catch {
       return null;
@@ -114,7 +121,7 @@ export function getBaseBranch(cwd?: string): string | null {
  */
 export function getAddedFiles(cwd?: string): string[] {
   try {
-    const out = execSync('git status --porcelain -z', gitOpts(cwd));
+    const out = git(['status', '--porcelain', '-z'], cwd);
     const records = out.split('\0');
     const added: string[] = [];
     for (let i = 0; i < records.length; i++) {
@@ -142,8 +149,8 @@ export function getAddedFiles(cwd?: string): string[] {
  */
 export function getChangedFiles(cwd?: string): string[] {
   try {
-    const unstaged = execSync('git diff --name-only', gitOpts(cwd));
-    const staged = execSync('git diff --cached --name-only', gitOpts(cwd));
+    const unstaged = git(['diff', '--name-only'], cwd);
+    const staged = git(['diff', '--cached', '--name-only'], cwd);
     const all = `${unstaged}\n${staged}`
       .split('\n')
       .map((p) => p.trim())
@@ -163,10 +170,30 @@ export function getChangedFiles(cwd?: string): string[] {
  */
 export function isWorkingTreeClean(cwd?: string): boolean {
   try {
-    execSync('git diff --quiet', gitOpts(cwd));
-    execSync('git diff --cached --quiet', gitOpts(cwd));
+    git(['diff', '--quiet'], cwd);
+    git(['diff', '--cached', '--quiet'], cwd);
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Alias names git accepts; anything else is refused before it reaches argv. */
+const ALIAS_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * The body of `alias.<name>` in the git config that applies in `cwd`, or null.
+ *
+ * Used by the force-push guard, so `git pf` with `alias.pf = push --force` is judged as the
+ * force push it is. Fails OPEN (null): an unreadable config means no alias is expanded, and
+ * the command is judged as written.
+ */
+export function resolveGitAlias(name: string, cwd?: string): string | null {
+  if (!ALIAS_NAME_RE.test(name)) return null;
+  try {
+    const body = git(['config', '--get', `alias.${name}`], cwd).trim();
+    return body === '' ? null : body;
+  } catch {
+    return null;
   }
 }

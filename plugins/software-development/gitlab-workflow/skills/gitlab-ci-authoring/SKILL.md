@@ -1,187 +1,147 @@
 ---
 name: gitlab-ci-authoring
-description: "Write and harden .gitlab-ci.yml: pin every remote include to a tag or commit SHA instead of a mutable branch, use rules: rather than the legacy only/except, build a DAG with needs:, keep artifacts and cache distinct, get cloud credentials from OIDC id_tokens instead of long-lived keys, cancel superseded pipelines with interruptible, and select runners by tag. Also covers when extends:, child pipelines and reusable templates earn their complexity, and how to read a failing job. Use when creating or editing .gitlab-ci.yml, reviewing a pipeline for supply-chain or secret-exposure risk, or debugging a red pipeline."
+description: "Writes and debugs .gitlab-ci.yml to house policy: pinned includes, rules:, protected variables, OIDC id_tokens. Use when editing .gitlab-ci.yml or a pipeline was not created. Not for a failing job on an MR (use mr-lifecycle); not for GitHub Actions (use github-workflow:actions-authoring)."
+when_to_use: "write a gitlab ci pipeline, add CI to this repo, rules vs only except, duplicate pipelines, needs DAG, cache vs artifacts, OIDC to AWS from GitLab, id_tokens, protected variable, interruptible, why is my pipeline not running"
+allowed-tools: Read, Grep, Glob, Edit(.gitlab-ci.yml), Edit(.gitlab/ci/**), Bash(glab ci lint *), Bash(glab ci lint), Bash(glab ci list *), Bash(git log *)
 license: MIT
-when_to_use: "write a gitlab ci pipeline, add CI to this repo, gitlab-ci rules vs only except, needs DAG, cache vs artifacts, OIDC to AWS from GitLab, id_tokens, masked variable, protected variable, interruptible, runner tags, child pipeline, why is my pipeline not running"
-allowed-tools: Bash(glab:*), Bash(git:*), Bash(python3:*), Read, Write, Edit, Grep, Glob
 ---
 
 # gitlab-ci-authoring
 
-A pipeline file is production code with a credential attached. It runs on a machine you do not own,
-with access to your registry and your cloud. Treat it accordingly.
+Treat a pipeline file as production code that holds a credential. It runs on a machine you do not
+own, with access to your registry and your cloud, and anyone who can push a branch can make it run.
 
-## Step 1 — see what exists
+## Step 1: read what exists
 
-```bash
-ls -la .gitlab-ci.yml .gitlab/ci 2>/dev/null
-git log --oneline -5 -- .gitlab-ci.yml
-glab ci list --per-page 5
-```
+Read `.gitlab-ci.yml` and anything under `.gitlab/ci/`, then `git log --oneline -5 -- .gitlab-ci.yml`
+and `glab ci list --per-page 5`. Without a checkout, ask the user to paste the file and the last few
+pipeline results, and propose edits only to a file you have read.
 
-If there is no shell available, ask for the current `.gitlab-ci.yml` and the last few pipeline
-results to be pasted in. Do not propose edits to a file you have not read.
-
-## Pin every remote `include:` to a tag or a SHA
+## Pin every include
 
 ```yaml
-# Wrong — a branch is a mutable pointer. Whoever controls it controls your pipeline.
 include:
   - project: '<group>/ci-templates'
     file: '/templates/build.yml'
-    ref: main
-
-# Right — a tag, or better a commit SHA, with the human-readable version alongside.
-include:
-  - project: '<group>/ci-templates'
-    file: '/templates/build.yml'
-    ref: 3d3c42e5aac5ba805825da76410c181273ba90b1  # v2.4.0
+    ref: <40-char commit sha>          # vX.Y.Z
+  - component: $CI_SERVER_FQDN/<group>/<component>/build@<40-char commit sha>
+  - remote: 'https://example.com/ci/lint.yml'
+    integrity: 'sha256-<base64 digest of the file>'
 ```
 
-This is the same rule the sibling `github-workflow` plugin's `actions-authoring` states for
-third-party actions, for the same reason and at the same bar: **a mutable ref means an upstream
-compromise runs arbitrary code in your pipeline with your secrets.** A tag is better than a branch
-because it is *conventionally* stable; a SHA is better than a tag because it is *actually*
-immutable. Where a remote include is from a project you do not control, a SHA is the only honest
-choice.
+A branch is a mutable pointer, so whoever controls it controls your pipeline and its secrets. A tag
+is only conventionally stable; a SHA is immutable, and is the only acceptable ref for a project you
+do not control. Keep the human-readable version in a comment beside it. `include:remote` has no ref;
+pin it with `integrity`, or prefer `project:` or `component:`. The same rule for GitHub Actions lives
+in `github-workflow:actions-authoring`.
 
-`include:remote:` fetching a URL is worse still — it has no ref at all. Prefer `project:` or
-`component:`.
+## `rules:`, and one pipeline per push
 
-## `rules:` replaces `only/except`
+`only`/`except` is legacy; write `rules:`. Rules are evaluated top to bottom and the first match
+wins, so the order is the logic. End a job's rules with an explicit `- when: never` so a reader does
+not need to know the default.
 
-`only/except` is legacy and cannot express most of what real pipelines need. Everything new uses
-`rules:`.
+Without `workflow:rules`, a push to a branch with an open MR can create two pipelines (a branch
+pipeline and an MR pipeline) that race each other. Put this at the top of the file:
 
 ```yaml
-deploy:
-  script: ./deploy.sh
+workflow:
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"
       when: never
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: on_success
-    - when: never          # default-deny. Say it out loud.
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
 ```
 
-**Rules are evaluated top to bottom and the first match wins.** Order is the logic. End with an
-explicit `when: never` rather than relying on the implicit default — a reader should not have to
-know the default to know whether the job runs.
+`rules:changes` is true on a new branch and on any pipeline without a push event (schedules,
+triggers, the web UI), so it cannot gate an expensive job on its own there. On MR pipelines it
+compares against the target branch; elsewhere set `rules:changes:compare_to` to a ref.
 
-`changes:` is the common trap: on a branch pipeline it compares against the previous commit, which
-after a squash or a force-push is not what you meant. Scope it to merge-request pipelines where the
-comparison is against the target branch.
+## `needs:`, artifacts and cache
 
-## `needs:` turns stages into a DAG
+- `needs: [build]` starts a job when `build` finishes rather than when its whole stage does;
+  `needs: []` starts it at once. A job with `needs` downloads artifacts only from the jobs it
+  needs; add `artifacts: false` inside a `needs` entry when it needs the ordering but not the files.
+  Without `needs`, a job downloads artifacts from every job in earlier stages unless
+  `dependencies: []` says otherwise.
+- `cache` is for speed and may be missing; `artifacts` are outputs and must not be. A pipeline that
+  is correct only with a warm cache is broken; test it cold.
 
-Stages run in sequence; `needs:` lets a job start as soon as its own dependencies finish.
+## Variables and secrets
 
-```yaml
-test:unit:
-  stage: test
-  needs: ['build']        # starts when build finishes, not when all of stage build does
-```
+- **Protected** variables reach only pipelines on protected branches and tags. Mark every deploy
+  credential protected; otherwise anyone who can push a branch can run a job that prints it. An MR
+  pipeline from an unprotected source branch or a fork does not get protected variables, which is
+  the point.
+- **Masked** (or **masked and hidden**) keeps a value out of job logs. GitLab refuses to mask a
+  value that does not meet its masking requirements. Masking is not secrecy: a script that sends
+  the value somewhere, or transforms it (base64), is not stopped by it.
 
-`needs: []` starts a job immediately, in parallel with the first stage — right for a lint job that
-depends on nothing. The cost is that a DAG is harder to read than a sequence, so use it where the
-wall-clock saving is real and keep the stage list meaningful.
-
-## `cache` and `artifacts` are not the same thing
-
-| | `cache` | `artifacts` |
-|---|---|---|
-| Purpose | Speed. Reusable between pipelines. | Output. Passed between jobs, downloadable. |
-| If missing | Job is slower | Job is **wrong** |
-| Keyed by | `cache:key`, usually a lockfile hash | Nothing — produced by the job |
-
-**A pipeline that is correct only when the cache is warm is broken.** Test it cold. The failure mode
-is a green pipeline on every machine that has run it before and a red one for the new contributor.
-
-`dependencies:` controls which jobs' artifacts a job downloads. Absent, a job downloads artifacts
-from **every** job in every earlier stage — usually wasteful, occasionally wrong when two jobs
-produce the same path. Set `dependencies: []` on jobs that need none.
-
-## Secrets
-
-- **Masked** hides a value in job logs. It only works for values matching GitLab's mask rules, and a
-  variable that silently fails to mask looks exactly like one that masked successfully. Check.
-- **Protected** restricts a variable to protected branches and tags. Without it, anyone who can push
-  a branch can open an MR whose pipeline prints your production credential.
-- Masking is not secrecy. A script that sends a secret somewhere is not stopped by masking, and a
-  value that is base64'd in transit is not masked at all.
-
-### Prefer OIDC over stored cloud keys
+### OIDC instead of stored cloud keys
 
 ```yaml
 deploy:
   id_tokens:
-    AWS_TOKEN:
-      aud: https://gitlab.example.com     # your instance, per the cloud's trust policy
+    AWS_ID_TOKEN:
+      aud: <the audience the cloud's OIDC provider expects>
+  variables:
+    AWS_ROLE_ARN: arn:aws:iam::<account-id>:role/<deploy-role>
+    AWS_WEB_IDENTITY_TOKEN_FILE: $CI_PROJECT_DIR/.aws-web-identity-token
   script:
-    - aws sts assume-role-with-web-identity
-        --role-arn "$AWS_ROLE_ARN"
-        --web-identity-token "$AWS_TOKEN"
-        --role-session-name "ci-$CI_PIPELINE_ID"
+    - printf '%s' "$AWS_ID_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+    - aws sts get-caller-identity      # the SDK and CLI assume the role from the two variables
+    - ./deploy.sh
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 ```
 
-A long-lived access key in a CI variable is a credential with no expiry, readable by anyone who can
-run a job. OIDC exchanges a short-lived pipeline-scoped token instead, and the cloud side can
-condition the trust on the project, the branch and whether the ref is protected. See the
-`terraform-aws` plugin's `aws-iam-boundaries` skill for the role side of this.
+GitLab's ID token carries the claims the cloud's trust policy conditions on. `sub` is
+`project_path:<group>/<project>:ref_type:<branch|tag>:ref:<name>`; `ref_protected` is `"true"` on a
+protected ref. Condition on the exact `sub`; on gitlab.com also pin `project_id` and `ref_protected`.
+Self-managed supports only `sub` and `aud`. Never trust the group alone. Decode a real token from a
+job to confirm the claim values before writing the policy.
+The role and trust-policy side belongs to `terraform-aws:aws-iam-boundaries`.
 
-## Cancel superseded pipelines
+## Superseded pipelines
 
 ```yaml
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
 default:
-  interruptible: true      # per job, or here for all of them
+  interruptible: true
 ```
 
-With **auto-cancel redundant pipelines** enabled on the project, a new push cancels the older
-running pipeline for that ref. Jobs that must not be killed mid-flight — anything that has already
-started a deploy or a migration — set `interruptible: false` explicitly.
+Merge this into the same `workflow:` block as the rules above. With auto-cancel on, a new push cancels the older pipeline for the same ref. The default mode
+(`conservative`) cancels nothing once any job with `interruptible: false` has started; `interruptible`
+cancels only the interruptible jobs. Set `interruptible: false` on anything that deploys or migrates,
+so it is never killed halfway.
 
-## Runners
+## When the bigger mechanisms earn their place
 
-```yaml
-build:
-  tags: ['<runner-tag>']
-```
+- `extends:` for three or more jobs sharing a shape; `!reference` to reuse one key's value. Both
+  compose better than YAML anchors, which do not work across included files.
+- Child pipelines (`trigger:include:`) for a monorepo whose components have real pipelines of their
+  own, not for two jobs.
+- Components for one pipeline shape across repositories; version and pin them as above.
+- `parallel:matrix:` for a version or platform matrix; count the jobs it creates.
 
-A job whose tags match no available runner does not fail. It sits pending, which during an incident
-reads as a slow pipeline rather than a broken one. If a job is pending for more than a minute,
-check that a runner with those tags exists and is online before debugging the job.
-
-## When the bigger mechanisms earn their complexity
-
-- **`extends:`** — three or more jobs sharing a shape. Clearer than YAML anchors because it composes
-  and can be overridden per key. Prefer it to `<<: *anchor`.
-- **Child pipelines** (`trigger:include:`) — a monorepo where each component has its own real
-  pipeline. Worth it when the alternative is one file nobody can read; not worth it for two jobs.
-- **Components / templates** — the same pipeline shape across repositories. Version them and pin
-  them, per the rule at the top.
-- **`parallel:matrix:`** — the same job across a version or platform matrix. Watch the job count;
-  a three-by-three matrix is nine runners.
-
-## Debugging a red pipeline
-
-```bash
-glab ci status
-glab ci view
-glab ci trace <job-id>
-```
-
-Three failures that are not what they look like:
-
-- **The pipeline did not run at all.** Almost always `rules:` — or `workflow:rules:` at the top of
-  the file, which gates whether a pipeline is created in the first place and is easy to forget.
-- **A job is pending forever.** Runner tags, above.
-- **A YAML error.** GitLab rejects the file and the pipeline never appears, which looks identical to
-  a rule that did not match. Lint before pushing:
+## Verify
 
 ```bash
 glab ci lint
-python3 -c 'import sys,yaml;yaml.safe_load(open(sys.argv[1]))' .gitlab-ci.yml
+glab ci lint --dry-run --ref <branch>
 ```
 
-`glab ci lint` is the authority — it validates against the server, which resolves `include:` and
-catches a broken remote reference that local YAML parsing cannot see.
+`glab ci lint` validates against the server, which resolves every `include:`. `--dry-run` simulates
+creating a pipeline on that ref, so it also shows whether `workflow:rules` lets one be created.
+
+## When a pipeline misbehaves
+
+- **No pipeline appeared.** `workflow:rules` or a YAML error; the two look identical from the MR.
+  Run the lint above.
+- **A job is missing.** Its `rules:` did not match; read them top to bottom for that pipeline source.
+- **A job is pending forever.** No online runner has all of its `tags:`. It sits pending instead of
+  failing, so check the runner before the job.
+- **A job failed.** That is an MR problem: use `mr-lifecycle` to read the log.

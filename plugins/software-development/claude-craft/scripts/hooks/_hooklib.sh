@@ -158,6 +158,21 @@ PermissionDenied
 PostToolUseFailure
 PostToolBatch'
 
+# Events the hooks reference documents as having NO matcher support: a matcher there is
+# accepted and ignored. Every other event filters on something — a tool name, or a
+# per-event field such as SessionStart's source (startup|resume|clear|compact|fork) or
+# PreCompact's trigger (manual|auto) — so a matcher on those is a real filter.
+HL_NO_MATCHER_EVENTS='UserPromptSubmit
+PostToolBatch
+Stop
+TeammateIdle
+TaskCreated
+TaskCompleted
+WorktreeCreate
+WorktreeRemove
+MessageDisplay
+CwdChanged'
+
 # `deterministic-enforcement` §4: five hook types, where the donor knew two.
 HL_HOOK_TYPES='command
 http

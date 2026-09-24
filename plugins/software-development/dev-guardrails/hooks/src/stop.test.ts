@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldNudgeAdr, shouldNudgeCi, shouldNudgeDependencies } from './stop.ts';
+import { shouldNudgeAdr, shouldNudgeCi, shouldNudgeDependencies, shouldShowOnce } from './stop.ts';
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'stop.ts');
 
@@ -85,6 +87,80 @@ describe('shouldNudgeDependencies', () => {
   // A lockfile moving on its own is a routine refresh, not a dependency decision.
   it('does not fire on a lockfile alone', () => {
     assert.equal(shouldNudgeDependencies(['package-lock.json', 'Cargo.lock', 'go.sum']), false);
+  });
+});
+
+describe('shouldShowOnce', () => {
+  it('shows a message once per session, and again when it changes', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'stop-once-')), 'seen.json');
+    assert.equal(shouldShowOnce('s1', 'msg A', path), true);
+    assert.equal(shouldShowOnce('s1', 'msg A', path), false);
+    assert.equal(shouldShowOnce('s2', 'msg A', path), true, 'another session sees it');
+    assert.equal(shouldShowOnce('s1', 'msg B', path), true, 'a changed message is shown');
+  });
+
+  it('always shows when there is no state file or session id', () => {
+    assert.equal(shouldShowOnce('s1', 'm', null), true);
+    assert.equal(shouldShowOnce('', 'm', join(tmpdir(), 'unused.json')), true);
+  });
+});
+
+function git(cwd: string, ...args: string[]) {
+  return spawnSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], {
+    cwd,
+    encoding: 'utf-8',
+  });
+}
+
+/** A repo on branch feat/x with an uncommitted edit to a code path (fires the ADR nudge). */
+function repoWithCodeChange(): string {
+  const repo = mkdtempSync(join(tmpdir(), 'stop-repo-'));
+  git(repo, 'init', '-q', '-b', 'main');
+  mkdirSync(join(repo, 'src'));
+  writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-q', '-m', 'init');
+  git(repo, 'checkout', '-q', '-b', 'feat/x');
+  writeFileSync(join(repo, 'src', 'a.ts'), 'export const a = 2;\n');
+  return repo;
+}
+
+function runStop(cwd: string, stateDir: string, sessionId = 'sess-1') {
+  return spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', HOOK],
+    {
+      input: JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, stop_hook_active: false }),
+      encoding: 'utf-8',
+      cwd,
+      env: { ...process.env, CLAUDE_GUARDRAILS_STATE_DIR: stateDir },
+    },
+  );
+}
+
+describe('stop.ts output channel', () => {
+  // Regression: nudges were printed as plain stdout, which Claude Code sends only to the debug
+  // log on a Stop hook. They now arrive as one JSON object with a systemMessage for the user.
+  it('emits the nudge as a single systemMessage JSON object', () => {
+    const r = runStop(repoWithCodeChange(), mkdtempSync(join(tmpdir(), 'stop-state-')));
+    assert.equal(r.status, 0);
+    const parsed = JSON.parse(r.stdout) as { systemMessage?: string };
+    assert.match(parsed.systemMessage ?? '', /ADR currency/);
+    assert.deepEqual(Object.keys(parsed), ['systemMessage'], 'no decision field: it never blocks');
+  });
+
+  it('does not repeat an identical nudge on the next turn of the same session', () => {
+    const repo = repoWithCodeChange();
+    const state = mkdtempSync(join(tmpdir(), 'stop-state-'));
+    assert.notEqual(runStop(repo, state).stdout, '');
+    assert.equal(runStop(repo, state).stdout, '');
+    assert.notEqual(runStop(repo, state, 'sess-2').stdout, '', 'a new session is told again');
+  });
+
+  it('says nothing on a clean tree', () => {
+    const repo = repoWithCodeChange();
+    git(repo, 'checkout', '-q', '--', '.');
+    assert.equal(runStop(repo, mkdtempSync(join(tmpdir(), 'stop-state-'))).stdout, '');
   });
 });
 

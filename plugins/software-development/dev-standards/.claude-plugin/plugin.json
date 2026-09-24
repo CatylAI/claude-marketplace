@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "dev-standards",
-  "version": "0.4.0",
-  "description": "Vendor-neutral engineering standards: agent contracts, code review rubric, commit conventions and testing discipline.",
+  "version": "0.6.0",
+  "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"

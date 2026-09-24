@@ -27,6 +27,8 @@
 # Portable bash 3.2+ / zsh.
 
 set -uo pipefail
+# No __pycache__ left in the plugin tree: the suites import normalize/contract/testpaths in place.
+export PYTHONDONTWRITEBYTECODE=1
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 DET="$SELF_DIR/deps.sh"
@@ -120,8 +122,8 @@ fixture() {
 
 # ================================================================ GitHub Actions
 # The rule with a real exploit path rather than a reproducibility argument, and the one that must
-# agree with `github-workflow/skills/actions-authoring`. Three fixtures, because that skill states
-# two exemptions and a detector that ignored them would contradict the document it implements.
+# agree with `github-workflow/skills/actions-authoring`. The fixtures cover the rule, its exemptions
+# (a local path; a container image, which has no git ref) and the reusable-workflow case.
 d="$(fixture wf-bad .github/workflows/ci.yml)"
 cat > "$d/.github/workflows/ci.yml" <<'YML'
 name: ci
@@ -159,9 +161,20 @@ jobs:
     steps:
       - uses: ./.github/actions/setup
       - uses: docker://alpine:3.19
-      - uses: my-org/ci-workflows/.github/workflows/build.yml@v2
+      - uses: my-org/ci-workflows/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567  # v2.0.0
 YML
-expect_clean "actions-authoring's exemptions are honoured (local path, container action, reusable workflow)" "$d"
+expect_clean "actions-authoring's exemptions are honoured (local path, container action, SHA-pinned reusable workflow)" "$d"
+
+# A remote reusable workflow on a tag is as movable as an action on a tag; actions-authoring pins both.
+d="$(fixture wf-reusable-tag .github/workflows/ci.yml)"
+cat > "$d/.github/workflows/ci.yml" <<'YML'
+name: ci
+on: [push]
+jobs:
+  build:
+    uses: my-org/ci-workflows/.github/workflows/build.yml@v2
+YML
+expect_hit "a reusable workflow pinned to a tag is reported as MAJOR" "$d" "actions-unpinned-uses:MAJOR"
 
 # ================================================================ Dockerfile
 d="$(fixture docker-latest Dockerfile)"

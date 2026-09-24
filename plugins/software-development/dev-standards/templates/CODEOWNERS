@@ -93,7 +93,8 @@
 # and it is one more line that can lose the group in a later edit. Add a path rule only
 # when a specific reviewer must see that path.
 #
-# Every line below keeps the owning group. Delete the ones that do not apply to this repo.
+# Every example below names an extra, path-specific group AND keeps the owning group.
+# Replace the extra group with the one that must see that path, or delete the line.
 
 # --- Deploy-bearing files. Infrastructure and CI config are the highest-blast-radius
 # --- paths in every project shape, which is why the failure above happened on exactly these.
@@ -105,31 +106,31 @@
 # Dockerfile*                           @your-org/infra-group @your-org/your-review-group
 
 # --- Backend service.
-# src/                                  @your-org/your-review-group
-# tests/                                @your-org/your-review-group
+# src/                                  @your-org/backend-group @your-org/your-review-group
+# tests/                                @your-org/backend-group @your-org/your-review-group
 
 # --- API and shared libraries.
-# database/                             @your-org/your-review-group
-# shared_libs/                          @your-org/your-review-group
+# database/                             @your-org/api-group @your-org/your-review-group
+# shared_libs/                          @your-org/api-group @your-org/your-review-group
 
 # --- Frontend application.
-# src/app/                              @your-org/your-review-group
-# next.config.ts                        @your-org/your-review-group
-# package.json                          @your-org/your-review-group
+# src/app/                              @your-org/frontend-group @your-org/your-review-group
+# next.config.ts                        @your-org/frontend-group @your-org/your-review-group
+# package.json                          @your-org/frontend-group @your-org/your-review-group
 
 # --- Monorepo with submodules and a docs site.
-# apps/                                 @your-org/your-review-group
-# content/                              @your-org/your-review-group
-# .gitmodules                           @your-org/your-review-group
-# vendor/                               @your-org/your-review-group
+# apps/                                 @your-org/platform-group @your-org/your-review-group
+# content/                              @your-org/platform-group @your-org/your-review-group
+# .gitmodules                           @your-org/platform-group @your-org/your-review-group
+# vendor/                               @your-org/platform-group @your-org/your-review-group
 #   NOTE a submodule is a gitlink: a directory-suffixed pattern targets files WITHIN the
 #   directory, and a submodule contributes none, so `vendor/<submodule>/` may match nothing
 #   at all. Settle it with an open request that bumps the submodule pointer.
 
 # --- CI component / template library.
-# templates/                            @your-org/your-review-group
-# scripts/                              @your-org/your-review-group
+# templates/                            @your-org/ci-group @your-org/your-review-group
+# scripts/                              @your-org/ci-group @your-org/your-review-group
 
 # --- Agent plugin / marketplace.
-# .claude-plugin/                       @your-org/your-review-group
-# plugins/                              @your-org/your-review-group
+# .claude-plugin/                       @your-org/plugin-maintainers @your-org/your-review-group
+# plugins/                              @your-org/plugin-maintainers @your-org/your-review-group
