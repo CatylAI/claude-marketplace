@@ -1,7 +1,7 @@
 {
   "name": "gcp-observability",
-  "version": "0.1.0",
-  "description": "Google Cloud adapter for observability-core: concrete Cloud Logging, Monitoring and Error Reporting queries for incident response and production triage.",
+  "version": "0.2.1",
+  "description": "Google Cloud adapter for observability-core: where each incident and triage number lives in Cloud Logging, Monitoring and Error Reporting, read through Google's MCP servers or gcloud, and the GCP traps that skew it.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"

@@ -1,7 +1,7 @@
 {
   "name": "issue-tracker-core",
-  "version": "0.1.0",
-  "description": "Tracker-neutral issue discipline: the pre-work gate, branch and title conventions, status vocabulary, and parent-child hygiene.",
+  "version": "0.2.0",
+  "description": "Tracker-neutral issue discipline: an advisory pre-work gate, branch and PR title conventions, a seven-state status vocabulary, dedupe and parenting rules, and the comment trail.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"

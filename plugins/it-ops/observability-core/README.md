@@ -1,65 +1,82 @@
 # observability-core
 
-Vendor-neutral incident discipline: declare early, establish blast radius, triage
-production errors, and hand off cleanly to the postmortem.
+Vendor-neutral incident discipline for the live phase of an incident: declare early, measure
+blast radius, and triage production errors into tracked work.
 
-Everything here is written against **capabilities** rather than products. There is no
-requirement for any particular observability vendor — the procedures read the same
-whether your telemetry lives in a hosted APM, a cloud provider's metrics and logs
-service, a self-hosted log cluster, or a directory of rotated log files you grep.
+The skills are written against capabilities (an error aggregator, a metrics store, a deploy
+log, an incident record) rather than products, so they read the same whether your telemetry is
+a hosted APM, a cloud provider's logging and metrics, a self-hosted log cluster, or rotated log
+files you grep.
 
 ## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
 
 ```
 /plugin marketplace add CatylAI/claude-marketplace
 /plugin install observability-core@catylai
 ```
 
-## What's inside
+**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.
 
-| Skill | Purpose |
-|-------|---------|
-| `incident-declaration` | The declare-at-confirmation mandate, severity by customer impact, incident roles, communication cadence, and the scope-reset checkpoint after two failed mitigations. |
-| `blast-radius` | Measuring how many users, requests, tenants and regions are affected — and why that number, not the stack trace, sets severity. |
-| `production-triage` | The triage loop: aggregate by error signature, merge and dedupe, rank by blast radius and novelty, propose tracked work items behind an approval gate. |
+## Skills
 
-The root `SKILL.md` is the entry point and carries the capability-mapping table to fill
-in once per environment.
+| Skill | Use it when |
+| --- | --- |
+| `incident-declaration` | Production impact is confirmed or suspected. Declare at confirmation, set severity from the measured population, name the roles, post updates on a fixed cadence with a template, call the scope-reset checkpoint after two failed mitigations, and close out with a checklist. |
+| `blast-radius` | Severity needs a number behind it. Measures users, requests, tenants, scope, time and data integrity, checks what changed, and produces the reporting block whose last line names the dimension that set severity. |
+| `production-triage` | Sweeping a window of production errors. Aggregates by signature, merges, ranks by impact rather than count, dedupes against the tracker, proposes items, files only what you approve, and reports every cluster's outcome. |
+
+## Tell it where your telemetry lives
+
+Add a `## Observability capabilities` section to your project's `CLAUDE.md`: where errors
+aggregate, where metrics live, the exact production tag, the deploy and change log, known
+coverage gaps, where incidents are declared, the work tracker, and the comms channel. The
+template is in `skills/incident-declaration/references/capabilities.md`.
+
+The skills read that section when it exists. When it does not, they ask for the rows they need
+and carry on, and offer to write the section for you at the end. Anything nobody can answer is
+reported as `NOT MEASURED` rather than as zero.
 
 ## The core idea
 
-**Declare the incident the moment production impact is confirmed — not after the root
-cause is found.** Everything else in this plugin follows from that. Severity comes from
-the measured affected population; triage ranks by that same population; the response
-posture and comms cadence follow from severity. The stack trace drives the fix, never the
-response.
+Declare the incident the moment production impact is confirmed, not after the root cause is
+found. Severity comes from the measured affected population; triage ranks by that same
+population; response posture and comms cadence follow from severity. The stack trace drives the
+fix, not the response.
 
-## Relationship to `ops-workflows`
+## Surfaces
 
-This plugin covers the **live phase** of an incident: detection, declaration, severity,
-blast radius, triage, and the handoff at resolution.
+All three skills load in Claude Code and Cowork. The plugin ships no agents, hooks or MCP
+servers.
 
-It does **not** write postmortems. The `incident-postmortem` skill in the `ops-workflows`
-plugin already owns the blameless write-up — timeline format, five-whys root cause,
-contributing factors, what-went-well / where-we-got-lucky, and the action-item table.
-`incident-declaration` ends by handing off to it rather than duplicating it. Use both:
-`observability-core` while the incident is open, `ops-workflows` once it is resolved.
+- **Claude Code** with telemetry access (a CLI, an MCP server, or API credentials in the
+  environment) runs the queries itself and reads `CLAUDE.md` from the checkout.
+- **Without telemetry access or a checkout** (including the web), the skills work from what you
+  paste: grouped error exports, metric values, counts, and your capability answers. Declaration
+  goes ahead without numbers, and every number is labelled with its source.
 
-## Vendor adapters
+## Related plugins
 
-Concrete queries, dashboards and incident-tool API calls belong in a separate adapter
-plugin layered on top of this one. Keeping them out is what lets these procedures survive
-a change of telemetry vendor.
+- `datadog-observability` and `gcp-observability` hold the vendor-specific queries and follow
+  this plugin's reporting block, ranking order and templates.
+- `ops-workflows:incident-postmortem` owns the blameless write-up. `incident-declaration` hands
+  off to it at close-out.
 
-## Prerequisites
+## Layout
 
-None technical. Before first use in a new environment, fill in the capability table in
-`SKILL.md`: where errors aggregate, where metrics live, where the deploy log is, where an
-incident is declared, where follow-ups get owners, and where responders talk.
-
-## Dependencies
-
-- `dev-standards` — shared engineering conventions.
+```
+observability-core/
+├── .claude-plugin/plugin.json
+├── README.md
+└── skills/
+    ├── incident-declaration/
+    │   ├── SKILL.md
+    │   └── references/capabilities.md   # the CLAUDE.md section template
+    ├── blast-radius/SKILL.md
+    └── production-triage/SKILL.md
+```
 
 ## License
 

@@ -1,6 +1,7 @@
-# IT Operations
+# ops-workflows
 
-IT and SRE workflows: runbooks, incident postmortems, change requests and on-call handoffs.
+IT and SRE workflows: on-call runbooks built from repo evidence, and blameless incident
+postmortems with owned, dated action items.
 
 Works in **Claude Code** and in **Cowork** (Claude Code on the web).
 
@@ -10,30 +11,51 @@ Works in **Claude Code** and in **Cowork** (Claude Code on the web).
 
 ```
 /plugin marketplace add CatylAI/claude-marketplace
-/plugin install it-ops@catylai
+/plugin install ops-workflows@catylai
 ```
 
 **Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
-claude.ai account and Claude Code loads it automatically as a synced plugin.
+claude.ai account and it loads automatically as a synced plugin.
 
-## What's inside
+## Skills
 
-| Name | Type | Purpose | Available |
-|------|------|---------|-----------|
-| `/it-ops:runbook` | Skill | Write an operational runbook for a service or procedure, ready for the on-call engineer at 3am | both |
-| `incident-postmortem` | Skill | Write blameless incident postmortems and derive action items from timelines | both |
+| Skill | Use it when |
+| --- | --- |
+| `/ops-workflows:runbook <service>` | You need an on-call runbook for a service or procedure. Builds it from the repo's manifests, CI, scripts and alert definitions, cites the file behind every command, and marks every gap `TODO(owner)` with an Open TODOs list. |
+| `/ops-workflows:incident-postmortem` | An incident is resolved and needs its blameless write-up. Takes the incident record from `observability-core:incident-declaration` (or pasted notes) and produces a timeline, a causal chain of contributing factors, what went well, and an action table where every row has an owner, a due date and a checkable "done when". |
 
-Everything listed as a Skill loads on both surfaces. You can call one by name in Claude
-Code, or just describe what you want on either surface and let it trigger itself.
+Both skills also trigger from a plain description of what you want, so you don't need the
+slash command.
 
-**In Cowork:** this plugin's file-based skill searches your Terraform, Kubernetes and CI files, and writes the runbook to disk when it runs in Claude Code. On the web there is no checkout and no shell, so paste the data or notes into the conversation and it works from those instead.
+## Surfaces
+
+Both skills load in Claude Code and Cowork. The plugin ships no agents, hooks or MCP servers.
+
+- **Claude Code in a checkout:** `runbook` searches the repository and saves to
+  `docs/runbooks/<name>.md`. `incident-postmortem` can read a record from a file, returns the
+  postmortem inline, and saves it to `docs/postmortems/` only if you agree.
+- **Web, or no checkout:** paste the manifests, alert definitions, incident record or notes.
+  Both skills work from what you paste and return the result inline; nothing is written.
+
+## Related plugins
+
+- `observability-core` owns the live phase: `incident-declaration` (the Sev1–Sev4 scale, the
+  incident record and its states), `blast-radius` and `production-triage`. `incident-declaration`
+  hands off to `ops-workflows:incident-postmortem` at close-out.
+- `datadog-observability` and `gcp-observability` hand their blameless write-ups to
+  `ops-workflows:incident-postmortem` too.
 
 ## Layout
 
 ```
-it-ops/
-├── .claude-plugin/plugin.json   # manifest (name, version, description)
-├── commands/                    # skills you can invoke as /it-ops:<file-name>
-├── skills/<skill>/SKILL.md      # skills that trigger from the conversation
-└── (no agents: everything here runs on both surfaces)
+ops-workflows/
+├── .claude-plugin/plugin.json
+├── README.md
+└── skills/
+    ├── incident-postmortem/SKILL.md
+    └── runbook/SKILL.md
 ```
+
+## License
+
+MIT

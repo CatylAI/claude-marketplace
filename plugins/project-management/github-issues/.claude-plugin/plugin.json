@@ -1,7 +1,7 @@
 {
   "name": "github-issues",
-  "version": "0.1.0",
-  "description": "GitHub adapter for issue-tracker-core: the concrete gh calls for issues, labels, milestones, sub-issues and Projects v2.",
+  "version": "0.2.0",
+  "description": "GitHub adapter for issue-tracker-core: the gh and GitHub MCP calls for the issue lifecycle, status labels and issue types, sub-issue parents and orphan sweeps, and Projects v2 boards.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"

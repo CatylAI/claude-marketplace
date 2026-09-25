@@ -1,81 +1,45 @@
 # gcp-observability
 
-The Google Cloud adapter for `observability-core`. It fills in the capability table that
-the core leaves blank, and supplies the concrete Cloud Logging, Cloud Monitoring, Error
-Reporting, Cloud Build, Cloud Deploy and Cloud Audit Log queries that the core
-deliberately refuses to name.
+The Google Cloud adapter for `observability-core`. The core plugin owns the incident procedure:
+when to declare, severity, the blast-radius block, triage ranking and filing. This plugin says
+where each of those numbers lives in a GCP project, how to read it (Google's MCP servers first,
+`gcloud` and REST as the fallback, pasted data when neither is available), and which GCP
+behaviours make the number wrong.
 
-Works in **Claude Code** and in **Cowork** (Claude Code on the web) — with an important
-caveat about shell access, below.
+## What ships
 
-## What it is
+| Name | Type | Purpose | Surfaces |
+|---|---|---|---|
+| `gcp-incident-response` | Skill | Confirm impact in three reads, fill the core blast-radius block from GCP sources, and check what changed across Cloud Build, Cloud Deploy, Cloud Run revisions and the Admin Activity audit log | Claude Code, Cowork |
+| `gcp-log-queries` | Skill | Cloud Logging query language, the `--freshness` trap, zero-row checks, when to query a sink; ready-made filters in `references/filters.md` | Claude Code, Cowork |
+| `gcp-prod-triage` | Skill | Error Reporting inputs for the core triage loop: group stats across all regions, GCP field mapping, merge tells, group status proposals | Claude Code, Cowork |
+| `gcp-investigator` | Agent | Answers one bounded question read-only and returns the commands it ran, findings, gaps and a confidence level | Claude Code only |
 
-`observability-core` writes every incident procedure against capabilities rather than
-products: an error aggregator, a metrics store, a deploy log, an incident record. That is
-what lets it survive a change of telemetry vendor. It ends by asking you to map those
-capabilities once, per environment.
+Shared reference files, in `skills/gcp-incident-response/references/`:
 
-This plugin is that mapping for Google Cloud, plus the commands. The judgement stays in
-the core — when to declare, how severity is read off measured impact, what ranks above
-what in a triage sweep. Nothing here changes any of it. This layer only answers *how do I
-get that number out of GCP*.
+- `setup.md`: the GCP-filled rows for your project's `## Observability capabilities` section,
+  the map from each read to its MCP tool and CLI or REST fallback, and the IAM roles.
+- `rest-fallback.md`: Monitoring (filters and PromQL), Error Reporting and Trace REST calls, and
+  what `gcloud` can and cannot read.
 
 ## When to use it
 
-- Production is degraded or broken in a GCP project and you need to confirm impact fast.
-- Severity is being argued about and nobody has produced a number yet.
-- You need to know what shipped in the last 24 hours across Cloud Build, Cloud Deploy and
-  Cloud Audit Logs.
-- You need a working Cloud Logging filter right now, or a query is returning nothing and
-  you cannot tell whether the system is clean or the filter is wrong.
-- You are sweeping a window of production errors into a ranked, deduplicated set of
-  proposed work items.
+- A service in a GCP project is degraded and you need to confirm impact and put a number on
+  severity.
+- You need to know what changed in the project, including console changes that no pipeline
+  recorded.
+- A Cloud Logging query returns nothing and you cannot tell whether the system is clean or the
+  query is wrong.
+- You are sweeping a window of GCP production errors into proposed work items.
 
 ## When not to use it
 
-- **You are deciding *whether* something is an incident.** That is `observability-core`'s
-  `incident-declaration`. Read it first; come back here for the numbers.
-- **The incident is resolved and you are writing it up.** Postmortems belong to the
-  `incident-postmortem` skill in the `ops-workflows` plugin — the blameless write-up, the
-  timeline format, the action-item table. This plugin, like the core, covers the live
-  phase and stops at resolution.
-- **You want something changed.** Nothing here scales a service, rolls back a revision, or
-  mutes an error group. Where an action is implied, the skill recommends it and stops.
-- **You are on a different cloud.** The core's procedures are portable; these queries are
-  not.
-
-## Prerequisites
-
-An installed `gcloud` CLI, authenticated against a project you can read. Verify both
-before you start querying, because an expired credential and a genuinely quiet system
-return the same empty output:
-
-```
-gcloud auth list
-gcloud config get-value project
-```
-
-If the active account is wrong or the project is unset, fix that before reading any result
-as meaningful.
-
-### IAM roles for a read-only responder
-
-| Role | Grants |
-|------|--------|
-| `roles/logging.viewer` | Read log entries, including Admin Activity audit logs. |
-| `roles/monitoring.viewer` | Read metrics, time series, alert policies and dashboards. |
-| `roles/errorreporting.viewer` | Read error groups, group stats and events. |
-
-Two additions depending on what you need to reach:
-
-- `roles/logging.privateLogViewer` — required to read **Data Access** audit logs. Admin
-  Activity logs are covered by `roles/logging.viewer`; Data Access logs are not, and are
-  also off by default.
-- `roles/cloudtrace.user` — required to read Cloud Trace spans. Verify against your own
-  organization's role policy; trace roles are the least standardised of the set.
-
-None of these grant write access, which is the point: the whole plugin, and the
-`gcp-investigator` subagent in particular, is designed to work from a read-only identity.
+- Deciding whether something is an incident, or what severity means:
+  `observability-core:incident-declaration` and `observability-core:blast-radius`.
+- The write-up after resolution: `ops-workflows:incident-postmortem`.
+- Changing anything. The skills and the agent only read; where an action is implied they write
+  down the command for someone with write access.
+- Other clouds.
 
 ## Install
 
@@ -86,67 +50,117 @@ None of these grant write access, which is the point: the whole plugin, and the
 /plugin install gcp-observability@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
-claude.ai account and Claude Code loads it automatically as a synced plugin.
+This also installs `observability-core`, which it depends on.
 
-## What's inside
+**claude.ai:** enable the plugin for your claude.ai account. Claude Code then loads it as a
+synced plugin (`gcp-observability@synced`).
 
-| Name | Type | Purpose | Available |
-|------|------|---------|-----------|
-| `gcp-incident-response` | Skill | Confirm production impact in three queries, measure blast radius across users/requests/tenants/regions/time, correlate against builds, rollouts and audit-log configuration changes | both |
-| `gcp-log-queries` | Skill | Cloud Logging cookbook: `gcloud logging read` anatomy, the query language, ready-to-paste filters, log-based metrics, quota hazards, and when to query a sink instead | both |
-| `gcp-prod-triage` | Skill | Error Reporting `groupStats` before `events`, ranking by blast radius and novelty, deduplication, and a proposal set for a tracker adapter to file | both |
-| `gcp-investigator` | Subagent | Answers one bounded investigative question read-only and reports the literal commands it ran, what it found, and what it could not determine | Claude Code only |
+## Tell it about your project
 
-Everything listed as a Skill loads on both surfaces. You can call one by name in Claude
-Code, or just describe what you want on either surface and let it trigger itself.
+Add a `## Observability capabilities` section to your project's `CLAUDE.md`, as described in
+`observability-core`. The GCP rows are pre-filled in
+`skills/gcp-incident-response/references/setup.md`; the skills also offer to write them after an
+incident or sweep. The incident record, work tracker and comms channel are not GCP products, so
+those rows are yours to fill in.
 
-**Subagents are Claude Code only.** `gcp-investigator` is unavailable in Cowork; the
-skills above are not. There is a second caveat specific to this plugin: **every skill here
-drives the `gcloud` CLI, and Cowork has no checkout and no shell.** The skills are fully
-readable on the web surface — the filters, the API parameters, the ranking rules and the
-reporting formats are all text — but they are only *executable* where a shell and an
-authenticated `gcloud` exist, which in practice means Claude Code.
+## Connecting to Google Cloud
+
+The skills use the first of these that works.
+
+### 1. Google's MCP servers (recommended)
+
+- **Remote servers run by Google:** Cloud Logging, Cloud Monitoring, and, in Preview, Error
+  Reporting and Cloud Trace. Each has an HTTP endpoint of the form
+  `https://<service>.googleapis.com/mcp` and uses OAuth with IAM. The caller needs
+  `roles/mcp.toolUser` on the project in addition to the read roles below. Setup, including the
+  OAuth client for Claude, is in Google's "Configure MCP in an AI application" guide
+  (docs.cloud.google.com/mcp/configure-mcp-ai-application) and the per-product pages
+  (for example docs.cloud.google.com/logging/docs/use-logging-mcp and
+  docs.cloud.google.com/monitoring/docs/use-monitoring-mcp).
+- **Local server:** `@google-cloud/observability-mcp` from `googleapis/gcloud-mcp`, run with
+  `npx -y @google-cloud/observability-mcp`. It uses Application Default Credentials
+  (`gcloud auth application-default login`) and a quota project that has the Logging,
+  Monitoring, Trace and Error Reporting APIs enabled. It is marked preview by its maintainers.
+
+The plugin ships no `.mcp.json`, because the remote servers need your own OAuth client and the
+local one needs your credentials. Add each server with `claude mcp add` under the name below. The
+skills work with any name, because they look for the tool names (`list_log_entries`,
+`list_timeseries` or `list_time_series`, `list_group_stats`). The `gcp-investigator` agent is
+stricter: its tool list allows only these server names, so a server added under another name is
+invisible to it and it falls back to `gcloud`.
+
+| Server | Name to use |
+|---|---|
+| Google remote Logging MCP | `gcp-logging` |
+| Google remote Monitoring MCP | `gcp-monitoring` |
+| Google remote Error Reporting MCP | `gcp-error-reporting` |
+| Google remote Trace MCP | `gcp-trace` |
+| Local `@google-cloud/observability-mcp` | `gcp-observability` |
+
+### 2. gcloud and REST
+
+An installed, authenticated `gcloud` (`gcloud auth list`, `gcloud config get-value project`).
+Logging, builds, rollouts and revisions are read with `gcloud`; Monitoring, Error Reporting and
+Trace have no `gcloud` read command, so the skills use REST with
+`gcloud auth print-access-token`.
+
+### 3. Pasted data
+
+With neither, the skills ask you to paste console exports (request counts by status class, the
+Error Reporting list, log entries) and label every number `pasted`.
+
+### IAM roles for a read-only identity
+
+| Role | Grants |
+|---|---|
+| `roles/logging.viewer` | Log entries, including Admin Activity audit logs |
+| `roles/logging.privateLogViewer` | Data Access audit logs (also off by default per service) |
+| `roles/monitoring.viewer` | Time series, alert policies, dashboards |
+| `roles/errorreporting.viewer` | Error groups, group stats, events |
+| `roles/cloudtrace.user` | Trace data |
+| `roles/mcp.toolUser` | Calling Google's remote MCP servers |
+
+## Surfaces
+
+- **Claude Code** on your machine: everything works, with whichever of the three connections
+  you have.
+- **Claude Code on the web** runs in a cloud container with a shell. What it usually lacks is
+  `gcloud` credentials and network access to `*.googleapis.com`; both are environment settings.
+  Without them, use Google's MCP servers if connected, or pasted data.
+- **Cowork:** the three skills load and work through connected MCP servers or pasted data.
+- **`gcp-investigator` is Claude Code only**, as plugin agents are. The plugin still uses an
+  agent here because an investigation can take dozens of queries whose raw
+  output would otherwise fill the main session's context. On other surfaces, use the skills
+  directly.
+
+The agent inherits the session's tools except Write, Edit and NotebookEdit, so that it can use
+whatever Google Cloud MCP server you connected. It stays read-only by instruction; for a
+guarantee, add deny rules for `gcloud` write verbs in your permission settings, and allow rules
+such as `Bash(gcloud logging read *)` to avoid prompts.
 
 ## Layout
 
 ```
 gcp-observability/
-├── .claude-plugin/plugin.json            # manifest (name, version, description, dependencies)
-├── SKILL.md                              # plugin entry point; the filled-in capability table
-├── skills/
-│   ├── gcp-incident-response/SKILL.md    # impact confirmation, blast radius, change correlation
-│   ├── gcp-log-queries/SKILL.md          # Cloud Logging cookbook
-│   └── gcp-prod-triage/SKILL.md          # Error Reporting sweep and proposal set
+├── .claude-plugin/plugin.json
+├── README.md
 ├── agents/
-│   └── gcp-investigator.md               # read-only subagent; Claude Code only
-└── README.md
+│   └── gcp-investigator.md
+└── skills/
+    ├── gcp-incident-response/
+    │   ├── SKILL.md
+    │   └── references/
+    │       ├── setup.md
+    │       └── rest-fallback.md
+    ├── gcp-log-queries/
+    │   ├── SKILL.md
+    │   └── references/filters.md
+    └── gcp-prod-triage/SKILL.md
 ```
-
-## The `observability-core` seam
-
-The core's final section asks you to write down the local answer to six capabilities.
-Here they are for Google Cloud:
-
-| Capability | GCP service |
-|------------|-------------|
-| Error aggregator | Cloud Error Reporting (`projects.groupStats.list` for aggregates, `events.list` for raw); Cloud Logging as the fallback for services that do not report into it |
-| Metrics store | Cloud Monitoring — `projects.timeSeries.list`, or PromQL / MQL through the query endpoints |
-| Deploy / change log | Cloud Build, Cloud Deploy, Cloud Run revisions, **and** Cloud Audit Logs for every change that did not go through a pipeline |
-| Incident record | **Not a GCP product.** Cloud Monitoring "incidents" are alert-policy state — no severity, no roles, no timeline, no narrative. The declaration artifact lives in your incident tool or a shared document. |
-| Work tracker | **Not a GCP product.** Pair with a tracker adapter; this plugin proposes items, it does not file them. |
-| Comms channel | **Not a GCP product.** Your chat platform. Monitoring notification channels can page into it; they do not coordinate a response. |
-
-Three of six have no GCP answer, and that is reported rather than hidden. The core's rule
-carries through this entire plugin: **if a capability has no local answer, say so out loud
-during the incident — an unmeasured dimension is an unknown, not a zero.** You will find
-the same rule applied to `affectedUsersCount: 0`, to zero-row log queries, and to every
-`NOT MEASURED` slot in the blast-radius reporting block.
 
 ## Dependencies
 
-- `observability-core` — the vendor-neutral incident discipline this plugin adapts.
-  Install it; without it you have queries and no procedure.
+- `observability-core`: the procedures, reporting block and templates this plugin fills in.
 
 ## License
 

@@ -1,304 +1,222 @@
 ---
 name: issue-lifecycle-github
-description: "Carry out the pre-work gate and the issue comment trail against GitHub with the gh CLI — find or create a scoped assigned issue before writing code, read its full state including comments, derive the branch name and pull request title from it, post the start, handoff and finish comments, and close or reopen it with an honest reason. Use at the start of any implementation task in a GitHub repository, when opening a pull request, when pausing mid-stream, and when a change merges."
+description: "Runs issue-tracker-core's pre-work gate and comment trail on GitHub with gh or GitHub MCP tools: fetch, create, assign, move, comment on, close, reopen. Use when working a GitHub issue. Not for labels, parents or sweeps (use backlog-hygiene-github); not for PRs (use github-workflow:pr-lifecycle)."
+allowed-tools: Bash(gh auth status), Bash(gh issue view *), Bash(gh issue list *), Bash(git branch --show-current), Bash(printenv CLAUDE_TICKET_PATTERN)
 license: MIT
 ---
 
 # Issue Lifecycle on GitHub
 
-`pre-work-gate` and `issue-lifecycle` in `issue-tracker-core` say what must be
-true and what must be recorded. This skill is how that happens with `gh`.
+The rules live in `issue-tracker-core`: `pre-work-gate` (the four properties, the scope check and
+the summary line) and `tracker-discipline` (the seven states, dedupe, parenting and the comment
+templates). This skill supplies the GitHub calls that carry them out. Reads are pre-approved;
+every write (edit, comment, create, close) asks first.
 
-Every command below is literal. Substitute `<owner>/<repo>` and the issue number;
-change nothing else. Where a command is run outside the repository checkout, add
-`--repo <owner>/<repo>`.
+## Access
 
-## Step 1 — Find the key
+Use the first that works:
 
-Branch first, per the core's search order:
+1. **gh.** `gh auth status` must report an account for the repository's host. Outside a checkout,
+   add `--repo <owner>/<repo>` to every `gh issue` command; in `gh api` paths, `{owner}` and
+   `{repo}` are filled in from the checkout.
+2. **GitHub MCP tools** (the GitHub MCP server or the claude.ai GitHub connector), when `gh` is
+   missing or unauthenticated, as on the web. The mapping is under [Without gh](#without-gh).
+3. **Neither:** use the core's "Work from a pasted issue" path, and print each `gh` command below
+   for the user to run.
 
-```
-git branch --show-current
-```
+Shell variables do not survive between Bash calls. Write issue numbers literally into each
+command, or chain dependent steps inside one call.
 
-Match the result against the configured `CLAUDE_TICKET_PATTERN`. In a GitHub
-repository that pattern is the one the repo chose for the prefix seam — see the
-plugin root `SKILL.md`. With the preferred `GH-[0-9]+` convention:
+Newer `gh` releases add `--parent`, `--type` and `--blocked-by`. If `gh issue edit --help` does
+not list `--parent`, use the fallbacks noted below. Versions are in
+[references/gh-versions.md](references/gh-versions.md).
 
-```
-git branch --show-current | grep -oE 'GH-[0-9]+' | head -1 | cut -d- -f2
-```
+## Settings
 
-That prints the bare issue number. No match means no key on the branch; fall
-through to the user's message, then to earlier session context, then ask.
+Read the `## Issue tracker` section of the project's `CLAUDE.md`, as the core describes. The
+GitHub values (ticket pattern `GH-[0-9]+` or `[0-9]+`, and a status mapping on `status:` labels)
+are filled in in [references/issue-tracker-section.md](references/issue-tracker-section.md). The
+examples below assume that recommended mapping.
 
-## Step 2 — Fetch the issue, do not trust the key
+## Step 1: Find the issue number
 
-A key proves someone typed a string. Read the issue:
+Run `git branch --show-current` and match the Ticket pattern. With `GH-[0-9]+`, the branch
+`fix/GH-123-retry-worker` names issue `#123`. No match: follow the core's search order (the
+user's message, then this session), then ask.
 
-```
-gh issue view 123 --json number,title,state,stateReason,assignees,labels,milestone,url,body
-```
+## Step 2: Fetch, then print the summary
 
-If that exits non-zero, the issue does not exist or you cannot see it. Stop and
-ask; do not create one to make the gate pass.
-
-Render the one-line summary the core requires before doing anything else:
-
-```
-gh issue view 123 --json number,title,state,assignees,labels \
-  --jq '"[#\(.number)] \(.title) — State: \(.state) — Labels: \(.labels|map(.name)|join(",")) — Assignees: \(.assignees|map(.login)|join(","))"'
-```
-
-## Step 3 — Read the full state, including comments
-
-The gate's scope check needs the comment thread, not just the body. A scope
-negotiation from three weeks ago lives there.
-
-```
+```bash
+gh issue view 123 --json number,title,state,stateReason,assignees,labels,milestone,issueType,parent,url,body
 gh issue view 123 --comments
 ```
 
-Machine-readable form, for when you need to reason over it:
+The comment thread is part of the scope check; an earlier scope negotiation lives there. If `gh`
+rejects `issueType` or `parent` as unknown fields (an older release), drop them and read the parent
+with `gh api repos/{owner}/{repo}/issues/123 --jq .parent_issue_url` (null means no parent).
 
-```
-gh issue view 123 --json number,title,body,state,stateReason,labels,milestone,assignees,url,comments \
-  --jq '{number, title, state, stateReason, labels: [.labels[].name], milestone: .milestone.title, comments: [.comments[] | {author: .author.login, createdAt, body}]}'
-```
+A non-zero exit means the issue does not exist or this is the wrong repository. Ask which issue the
+work belongs to rather than creating one to make the gate pass.
 
-## Step 4 — Satisfy the gate
+Map the labels (or board status) to a core state through the Status mapping and print the core's
+summary line, for example `State: in-progress (status:in-progress)`.
 
-Four properties, four repairs.
+## Step 3: Repair gate failures
 
-**Exists** — Step 2 succeeded.
+| Property | Repair |
+|---|---|
+| Assigned | `gh issue edit 123 --add-assignee @me` |
+| Workable | `gh issue edit 123 --remove-label "status:ready" --add-label "status:in-progress"`, one command so the issue never carries two status labels or none. When a board carries state, use `projects-v2`. |
+| Parented | `gh issue edit 123 --parent 40`, or `--milestone "<title>"` when the Parent mechanism is milestone. Finding a candidate parent: `backlog-hygiene-github`. |
 
-**Assigned** — if `assignees` is empty, or the assignee is not whoever is doing
-the work:
+Then post the start comment (Step 6).
 
-```
-gh issue edit 123 --add-assignee @me
-```
+## Step 4: Create an issue
 
-`@me` resolves to the authenticated account. Assigning someone else uses their
-login: `--add-assignee <login>`. GitHub caps assignees at ten per issue.
+Run the core's dedupe check first. Search on the symptom, not your intended title:
 
-**Workable state** — GitHub has only `open` and `closed`. The in-progress claim is
-carried by a label or a Projects v2 field; see `triage-and-labels`. With the
-label convention:
-
-```
-gh issue edit 123 --remove-label "status:ready" --add-label "status:in-progress"
+```bash
+gh issue list --state open --search "timeout sign-in" --json number,title,labels --limit 20
+gh issue list --state closed --search "timeout sign-in reason:completed" --json number,title --limit 20
 ```
 
-Do this before the first edit to a source file, not at the end of the session.
+The second search is for regressions. Record `NEW`, `DUPLICATE → #<n>` or `UNCHECKED`. On a
+duplicate, comment on the existing issue instead of creating.
 
-**Parented** — a milestone, a sub-issue link to a parent, or both. See
-`milestones-and-sub-issues`.
+For `NEW`, set assignee, state and parent in the create call itself:
 
-### When no suitable issue exists
-
-Create one. A created issue must be scoped, assigned and parented in the same
-action, because a follow-up step is the step that does not happen:
-
-```
-gh issue create \
-  --title "Add retry logic to the ingestion worker" \
-  --body-file - \
-  --assignee @me \
-  --label "type:bug,status:in-progress,area:ingestion" \
-  --milestone "2026.Q1" <<'BODY'
+```bash
+gh issue create --title "Retry transient upstream failures in the ingestion worker" \
+  --assignee @me --label "status:in-progress" --type Bug --parent 40 --body-file - <<'BODY'
 ## Problem
-
 The ingestion worker aborts the batch on the first transient upstream 503.
 
 ## Acceptance
-
-- Transient 5xx responses are retried with backoff, bounded at 5 attempts.
+- Transient 5xx responses are retried with bounded backoff.
 - A permanently failing record is quarantined, not retried forever.
-- The retry count is visible in the worker's existing structured log line.
 BODY
 ```
 
-`gh issue create` prints the new issue's URL on stdout. Capture the number from
-it rather than re-querying:
+- `--type` only when the organization defines issue types; otherwise add a `type:` label
+  (`backlog-hygiene-github` explains which).
+- `--milestone "<title>"` instead of, or as well as, `--parent` when the Parent mechanism says so.
+- Without `--parent` support: create without it, read the number from the URL `gh` prints, and
+  attach it in the next call per `backlog-hygiene-github`.
 
-```
-url=$(gh issue create --title "..." --body "..." --assignee @me)
-number=${url##*/}
-```
+Read it back: `gh issue view <n> --json number,assignees,labels,issueType,parent,milestone`.
 
-Creating a new issue does not exempt you from the scope check — it *is* the scope
-check's remedy. If the user asked for one thing and an existing issue covers a
-different thing, the correct output is a new issue plus a sentence saying which
-issue the work now attaches to.
+## Step 5: Branch and pull request
 
-## Step 5 — Branch, title, scope
+The branch and title shape belong to `issue-tracker-core:branch-and-title-conventions`, and
+opening the pull request to `github-workflow:pr-lifecycle`. The one GitHub rule this skill adds:
+the pull request body carries `Fixes #123` (the `#` form, never `Fixes GH-123`) so the merge closes
+the issue. That works only when the pull request targets the default branch. Details are in
+[references/issue-tracker-section.md](references/issue-tracker-section.md).
 
-The core's rule: the key must be recoverable from the branch name. With the
-`GH-` convention:
+## Step 6: Comment trail
 
-```
-git switch -c feature/GH-123-retry-ingestion-worker
-```
+Use the core's start, handoff and finish templates. `--body-file -` reads the comment from stdin,
+so multi-line text needs no shell quoting:
 
-Everything downstream is then mechanical:
-
-| Artefact | Value | Derived how |
-| --- | --- | --- |
-| Commit scope | `GH-123` | The pattern match on the branch. |
-| Pull request title | `fix(GH-123): retry transient upstream failures` | Type from the branch prefix, scope from the key. |
-| Pull request body link | `Fixes #123` | The key with `GH-` stripped and `#` prepended. |
-| Later search | `gh issue view 123`, `git log --grep GH-123` | One token, two systems. |
-
-The prefix-to-type mapping is the core's: `feature` → `feat`, `fix` → `fix`,
-`refactor` → `refactor`, `chore` → `chore`, `docs` → `docs`.
-
-Recover the whole set from a branch in one go:
-
-```
-branch=$(git branch --show-current)
-key=$(grep -oE 'GH-[0-9]+' <<< "$branch" | head -1)
-number=${key#GH-}
-type=${branch%%/*}
-echo "key=$key number=$number branch-prefix=$type"
-```
-
-If `key` comes back empty, the branch predates the convention. Per the core: ask
-for the number, then fix the pull request title rather than renaming a branch
-someone else may have checked out.
-
-## Step 6 — The comment trail
-
-Three comments are mandatory. `gh issue comment` posts them; `--body-file -`
-reads stdin so a multi-paragraph comment does not have to survive shell quoting.
-
-**Start** — the approach, anything the description got wrong, and the branch:
-
-```
+```bash
 gh issue comment 123 --body-file - <<'BODY'
-Starting on `fix/GH-123-retry-ingestion-worker`.
-
-Plan: wrap the existing upstream client in a bounded retry with exponential
-backoff, so no call site changes. The description assumes the worker already
-distinguishes transient from permanent failures — it does not, so this adds that
-classification first.
+**Start**
+Branch: `fix/GH-123-retry-worker`. Plan: wrap the upstream client in a bounded retry.
+Differs from the description: the worker does not yet tell transient from permanent failures.
 BODY
 ```
 
-**Handoff or pause** — where things stand, what is known-broken, the single next
-step:
+**Blocked or paused.** The core sends blocked work back to `ready` or `parked`. On GitHub, record
+the blocker as a native dependency where available, together with the state move:
 
-```
-gh issue comment 123 --body-file - <<'BODY'
-Pausing here. Retry wrapper is written and unit-tested. The integration test
-against the staging queue fails on expired fixtures, which is unrelated to this
-change.
-
-Next step: refresh the fixtures under `test/fixtures/queue/`, then open the pull
-request.
-BODY
+```bash
+gh issue edit 123 --remove-label "status:in-progress" --add-label "status:ready" --add-blocked-by 118
 ```
 
-Pair the pause with the state move the core requires — an item is not left
-claiming in-progress while nobody is on it:
+Then post the handoff comment naming the blocker. Without `--add-blocked-by`, the comment alone
+carries the blocker. A repo that wants a filterable facet adds the `blocked` label described in
+`backlog-hygiene-github`, alongside the status label.
 
-```
-gh issue edit 123 --remove-label "status:in-progress" --add-label "status:blocked"
-```
+`gh issue comment` prints only the comment URL, so read it back:
+`gh issue view 123 --json comments --jq '.comments[-1] | {author: .author.login, createdAt}'`.
 
-**Finish** — the merged change and the acceptance confirmation:
+## Step 7: Close and reopen
 
-```
-gh issue comment 123 --body-file - <<'BODY'
-Merged in #131. Acceptance criteria 1 and 2 verified in the integration suite;
-criterion 3 (retry count in the log line) is covered by the new assertion in
-`worker_log_test`.
+Prefer the merge closing the issue through `Fixes #123`. Close by hand only when no code change
+is behind it, and pass `--reason` every time, because the reason is the only place GitHub separates
+finished from abandoned:
 
-Quarantine of permanently-failing records was split out as agreed — see #132.
-BODY
-```
+| Core state | Command |
+|---|---|
+| `done` | `gh issue close 123 --reason completed --comment "Shipped in #131."` |
+| `declined` | `gh issue close 123 --reason "not planned" --comment "<why>"` |
+| `declined` (duplicate) | `gh issue close 123 --duplicate-of 77` |
+| `parked` | Stays open: swap to `status:parked` and comment the revisit condition. |
 
-What does not get a comment: "still working on this". The core is explicit that
-routine progress noise trains readers to skim the thread.
+Reading back, `stateReason` maps `COMPLETED` to `done`, and `NOT_PLANNED` or `DUPLICATE` to
+`declined`. A closed issue's state wins over any `status:` label left on it; there is no
+`status:done` label to maintain.
 
-### Verify the comment landed
+Reopening retracts the close, so replace whatever `status:` label the issue still carries:
 
-The core requires reading back anything automation claimed to do. `gh issue
-comment` is quiet on success, so confirm:
-
-```
-gh issue view 123 --json comments --jq '.comments[-1] | {author: .author.login, createdAt, body}'
-```
-
-## Step 7 — Closing
-
-Prefer the mechanical link. Put the closing keyword in the pull request body and
-let the merge close the issue:
-
-```
-gh pr create \
-  --title "fix(GH-123): retry transient upstream failures" \
-  --body-file - <<'BODY'
-Fixes #123
-
-Bounded retry with exponential backoff around the upstream client, plus a
-transient/permanent classification the worker did not previously have.
-BODY
+```bash
+gh issue reopen 123 --comment "Reopening: the retry bound applies per call, not per batch."
+gh issue edit 123 --remove-label "status:in-review" --add-label "status:in-progress"
 ```
 
-Why this is preferred over closing by hand: the merge and the close become one
-event, the issue records which pull request closed it, and there is no window in
-which the issue claims done while the change is unmerged — the exact false claim
-`status-vocabulary` warns about. GitHub's closing keywords are `close`, `closes`,
-`closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`, each
-followed by `#<number>`. They act only when the pull request merges into the
-repository's default branch.
+A reopened issue can get a second branch against the same key (`fix/GH-123-bound-per-batch`).
 
-Closing by hand is for issues with no code change behind them. The reason is not
-optional — it is the only place GitHub distinguishes finished from abandoned,
-which is the distinction the core says must survive any mapping:
+## Without gh
 
-```
-gh issue close 123 --reason completed --comment "Shipped in #131."
-```
+GitHub MCP tool names (the prefix depends on how the server is registered):
 
-```
-gh issue close 123 --reason "not planned" --comment "Superseded by the queue rewrite in #140. Not doing this separately."
-```
+| Step | Tool and arguments |
+|---|---|
+| Fetch, comments, parent | `issue_read` with `method` `get`, `get_comments` or `get_parent` |
+| Dedupe search | `search_issues` |
+| Create with parent | `issue_write` `method: create` with `parent_issue_number`, `assignees`, `labels`, `type` |
+| Assign, relabel, set type | `issue_write` `method: update`. `labels` and `assignees` replace the whole set, so read the current values and send the full list. |
+| Comment | `add_issue_comment` |
+| Close | `issue_write` `method: update`, `state: closed`, `state_reason` `completed`, `not_planned` or `duplicate` (with `duplicate_of`) |
+| Issue types available | `list_issue_types` |
 
-`completed` maps to the core's **done**; `not planned` maps to **declined**.
-Neither maps to **parked** — GitHub has no deferred state, so a parked item stays
-open with a `status:parked` label and a comment naming the revisit condition.
-Closing a parked item as `not planned` is a lie the backlog will believe.
+The MCP server has no dependency tool, so record a blocker in the handoff comment. With no tool
+at all, print the `gh` commands and say nothing is recorded until the user confirms.
 
-## Step 8 — Reopening
+## Examples
 
-```
-gh issue reopen 123 --comment "Reopening: the retry bound is respected per call, not per batch, so a poisoned batch still spins. Original fix in #131 stands; this is the missing outer bound."
-```
+<example>
+Branch `fix/GH-123-retry-worker`; the user asks to add retry logic to the ingestion worker.
+`gh issue view 123` returns an open issue assigned to the user, labelled `status:ready`, parent #40.
+Print the summary with `Gate: PASS` after moving it: `gh issue edit 123 --remove-label
+"status:ready" --add-label "status:in-progress"`, then post the start comment.
+</example>
 
-Reopening retracts the done claim, so the labels must retract with it. A reopened
-issue carrying `status:done` asserts two contradictory things at once:
+<example>
+Asked to file "export times out for large orgs". `gh issue list --state open --search "export
+timeout"` finds #77 "CSV export slow above 10k rows". Report `DUPLICATE → #77`, and comment on #77
+with the new symptom. Create nothing unless the user says it is a different problem.
+</example>
 
-```
-gh issue edit 123 --remove-label "status:done" --add-label "status:in-progress"
-```
-
-Reopening also does not re-derive a branch. If the original branch is merged and
-deleted, cut a new one against the same key — `fix/GH-123-bound-retries-per-batch`
-is a legitimate second branch for one issue. Two branches, one key, one history:
-that is the convention working, not a violation of it.
+<example>
+Mid-work on #123, the fix turns out to need the schema change tracked in #118.
+Run `gh issue edit 123 --remove-label "status:in-progress" --add-label "status:ready"
+--add-blocked-by 118`, then post the handoff comment with "Blocker: #118 (schema migration), owned
+by the data team". The issue now claims `ready` with a recorded blocker, not `in-progress`.
+</example>
 
 ## Common failures
 
 | Symptom | Cause | Repair |
-| --- | --- | --- |
-| `gh issue view` exits with `Could not resolve to an Issue` | Wrong repo context, or the number is a pull request in another repo. | Add `--repo <owner>/<repo>`. |
-| Gate finds no key on an obviously named branch | `CLAUDE_TICKET_PATTERN` still at the default `[A-Z][A-Z0-9]+-[0-9]+`, which a GitHub repo never matches unless the `GH-` convention is adopted. | Set the variable per the plugin root `SKILL.md`. |
-| Merged pull request did not close the issue | Keyword used the synthetic prefix (`Fixes GH-123`), or the pull request targeted a non-default branch. | Use `#123`; close by hand if the target branch was intentional. |
-| Issue closed with no reason recorded | `gh issue close` without `--reason` defaults to completed. | `gh issue reopen`, then close again with the right reason. |
+|---|---|---|
+| `Could not resolve to an Issue` | Wrong repository context, or the number is in another repo. | Add `--repo <owner>/<repo>`. |
+| Gate finds no key on a correctly named branch | Ticket pattern still the core default, which never matches a GitHub key. | Set the row per `references/issue-tracker-section.md`. |
+| Merged pull request did not close the issue | `Fixes GH-123` instead of `Fixes #123`, or the target was not the default branch. | Close by hand with `--reason completed`. |
+| `unknown flag: --parent` or unknown JSON field `parent` | `gh` older than the sub-issue flags. | Use the REST fallback in `backlog-hygiene-github`. |
 
-`gh` 2.93.0 accepts three reasons: `completed`, `"not planned"` and `duplicate`.
-Note the spelling difference — the CLI takes `"not planned"` with a space, while
-the REST API's field value is `not_planned`. A script that shells out to `gh`
-and a script that calls the API directly do not share the literal.
+## Verify
+
+After each write, read the issue back with `gh issue view 123 --json assignees,labels,state,stateReason,parent`
+(or `issue_read`) and check it against the core's Verify list: the state maps to the core state you
+intended, exactly one `status:` label on an open issue, the parent exists and is open, and the
+comment is on the issue. From pasted data, confirm the user has applied the printed commands.

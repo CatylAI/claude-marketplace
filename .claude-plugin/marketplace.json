@@ -8,7 +8,7 @@
   },
   "metadata": {
     "description": "CatylAI business plugins for Claude Code: hiring, sales, marketing, software development, customer support, finance, IT operations and project management.",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "plugins": [
     {
@@ -39,8 +39,8 @@
     {
       "name": "datadog-observability",
       "source": "./plugins/it-ops/datadog-observability",
-      "description": "Datadog adapter for observability-core: concrete log, metric, span, monitor and incident queries for incident response and production triage.",
-      "version": "0.1.0",
+      "description": "Datadog adapter for observability-core: Datadog MCP-first queries, traps and incident-record mappings for incident response and production triage, with a REST fallback.",
+      "version": "0.2.0",
       "keywords": [
         "datadog",
         "observability",
@@ -120,23 +120,10 @@
       "category": "software-development"
     },
     {
-      "name": "finance-workflows",
-      "source": "./plugins/finance/finance-workflows",
-      "description": "Finance workflows: budget variance analysis, forecast reviews, expense policy checks and board-ready summaries.",
-      "version": "0.1.0",
-      "keywords": [
-        "finance",
-        "budget",
-        "forecast",
-        "variance"
-      ],
-      "category": "finance"
-    },
-    {
       "name": "gcp-observability",
       "source": "./plugins/it-ops/gcp-observability",
-      "description": "Google Cloud adapter for observability-core: concrete Cloud Logging, Monitoring and Error Reporting queries for incident response and production triage.",
-      "version": "0.1.0",
+      "description": "Google Cloud adapter for observability-core: where each incident and triage number lives in Cloud Logging, Monitoring and Error Reporting, read through Google's MCP servers or gcloud, and the GCP traps that skew it.",
+      "version": "0.2.1",
       "keywords": [
         "gcp",
         "observability",
@@ -149,8 +136,8 @@
     {
       "name": "github-issues",
       "source": "./plugins/project-management/github-issues",
-      "description": "GitHub adapter for issue-tracker-core: the concrete gh calls for issues, labels, milestones, sub-issues and Projects v2.",
-      "version": "0.1.0",
+      "description": "GitHub adapter for issue-tracker-core: the gh and GitHub MCP calls for the issue lifecycle, status labels and issue types, sub-issue parents and orphan sweeps, and Projects v2 boards.",
+      "version": "0.2.0",
       "keywords": [
         "github",
         "issues",
@@ -164,7 +151,7 @@
       "name": "github-workflow",
       "source": "./plugins/software-development/github-workflow",
       "description": "GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "github",
         "pull-request",
@@ -178,7 +165,7 @@
       "name": "gitlab-workflow",
       "source": "./plugins/software-development/gitlab-workflow",
       "description": "GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "gitlab",
         "merge-request",
@@ -191,8 +178,8 @@
     {
       "name": "issue-tracker-core",
       "source": "./plugins/project-management/issue-tracker-core",
-      "description": "Tracker-neutral issue discipline: the pre-work gate, branch and title conventions, status vocabulary, and parent-child hygiene.",
-      "version": "0.1.0",
+      "description": "Tracker-neutral issue discipline: an advisory pre-work gate, branch and PR title conventions, a seven-state status vocabulary, dedupe and parenting rules, and the comment trail.",
+      "version": "0.2.0",
       "keywords": [
         "issues",
         "workflow",
@@ -204,8 +191,8 @@
     {
       "name": "jira-tracker",
       "source": "./plugins/project-management/jira-tracker",
-      "description": "Jira adapter for issue-tracker-core: the concrete REST API v3 calls for the pre-work gate, the comment trail, transitions, JQL sweeps and epic/parent hygiene.",
-      "version": "0.1.0",
+      "description": "Jira adapter for issue-tracker-core: the Jira calls for the pre-work gate, transitions, resolutions, the comment trail, JQL sweeps and parent hygiene, via the Atlassian MCP server, REST v3 or a pasted issue.",
+      "version": "0.2.0",
       "keywords": [
         "jira",
         "atlassian",
@@ -216,23 +203,10 @@
       "category": "project-management"
     },
     {
-      "name": "marketing-workflows",
-      "source": "./plugins/marketing/marketing-workflows",
-      "description": "Marketing workflows: campaign briefs, brand voice enforcement, content calendars and launch plans.",
-      "version": "0.1.0",
-      "keywords": [
-        "marketing",
-        "campaigns",
-        "content",
-        "brand"
-      ],
-      "category": "marketing"
-    },
-    {
       "name": "observability-core",
       "source": "./plugins/it-ops/observability-core",
       "description": "Vendor-neutral incident discipline while an incident is open: declare early, establish blast radius, and triage production errors into tracked work.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "keywords": [
         "incident",
         "observability",
@@ -244,8 +218,8 @@
     {
       "name": "ops-workflows",
       "source": "./plugins/it-ops/ops-workflows",
-      "description": "IT and SRE workflows: runbooks, incident postmortems, change requests and on-call handoffs.",
-      "version": "0.1.0",
+      "description": "IT and SRE workflows: on-call runbooks built from repo evidence, and blameless incident postmortems with owned, dated action items.",
+      "version": "0.2.0",
       "keywords": [
         "it",
         "sre",
@@ -269,45 +243,6 @@
       "category": "software-development"
     },
     {
-      "name": "project-workflows",
-      "source": "./plugins/project-management/project-workflows",
-      "description": "Project workflows: status reports, risk registers, RACI charts and sprint retrospectives.",
-      "version": "0.1.0",
-      "keywords": [
-        "project-management",
-        "status",
-        "risks",
-        "retro"
-      ],
-      "category": "project-management"
-    },
-    {
-      "name": "recruiting-workflows",
-      "source": "./plugins/hiring/recruiting-workflows",
-      "description": "Recruiting workflows: job descriptions, structured interview scorecards, resume screening and offer letters.",
-      "version": "0.1.0",
-      "keywords": [
-        "hiring",
-        "recruiting",
-        "interviews",
-        "hr"
-      ],
-      "category": "hiring"
-    },
-    {
-      "name": "sales-workflows",
-      "source": "./plugins/sales/sales-workflows",
-      "description": "Sales workflows: discovery call prep, objection handling, proposal drafting and pipeline reviews.",
-      "version": "0.1.0",
-      "keywords": [
-        "sales",
-        "crm",
-        "discovery",
-        "proposals"
-      ],
-      "category": "sales"
-    },
-    {
       "name": "snowflake-connector",
       "source": "./plugins/software-development/snowflake-connector",
       "description": "Connect Claude Code to your own Snowflake account with a read-only service role, via Snowflake's managed MCP server or the snow CLI, and query it with cost-bounded, verified SQL.",
@@ -320,19 +255,6 @@
         "cost"
       ],
       "category": "software-development"
-    },
-    {
-      "name": "support-workflows",
-      "source": "./plugins/customer-support/support-workflows",
-      "description": "Support workflows: ticket replies in your tone, escalation triage, knowledge base articles and macros.",
-      "version": "0.1.0",
-      "keywords": [
-        "support",
-        "tickets",
-        "helpdesk",
-        "escalation"
-      ],
-      "category": "customer-support"
     },
     {
       "name": "terraform-aws",

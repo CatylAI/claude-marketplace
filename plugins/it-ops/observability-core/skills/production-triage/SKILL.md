@@ -1,145 +1,242 @@
 ---
 name: production-triage
-description: "Sweep a window of production errors, cluster them by signature, dedupe against existing tickets, rank by blast radius and novelty, and propose tracked work items — writing nothing until approved. Use for 'what's broken in prod', scheduled error review, post-incident sweeps, or converting an error backlog into owned tickets. Vendor-neutral: describes the queries abstractly for any error aggregator."
+description: "Sweeps production errors into a ranked, deduplicated set of proposed tickets; files only what the user approves. Use for 'what's broken in prod', a scheduled error review or a post-incident sweep. Not for vendor sweeps (use datadog-observability:dd-prod-triage or gcp-observability:gcp-prod-triage)."
 license: MIT
 ---
 
 # Production Triage
 
-A repeatable loop that turns a window of production errors into a short, ranked list of
-things worth doing — and nothing else. The loop is **aggregate first, read second,
-propose third, write last.** It is deliberately read-only until a human approves the set
-of work items to create.
+A repeatable loop that turns a window of production errors into a short, ranked list of things
+worth doing. The order is fixed: aggregate, read, propose, then write. Phases 1 to 4 only read;
+the only writes happen in Phase 5, after the user approves, because a filed ticket is hard to
+un-file and the tracker's conventions belong to the people who own it.
 
-This skill describes telemetry access as capabilities. Wherever it says *query your error
-aggregator*, use whatever you run: a hosted APM's grouping view, a log platform's
-aggregation query, a cloud provider's metric filters, or `grep | sed | sort | uniq -c`
-over a log archive. The discipline is identical; only the syntax changes.
+This skill owns the ranking order, the ranked-table and proposal formats, and the outcome
+report. Vendor adapters (`datadog-observability:dd-prod-triage`,
+`gcp-observability:gcp-prod-triage`) supply the concrete queries and field names and follow
+these formats.
 
-## Inputs
+Wherever this skill says "query the error aggregator", use what the project runs: an APM's
+grouping view, a log platform's aggregation query, a cloud metric filter, or
+`grep | sed | sort | uniq -c` over a log archive.
 
-- **Scope** — one service, a named set, or everything. Default: everything in the
-  production environment.
-- **Window** — the time range. Default: the last 24 hours. Use a shorter window for a
-  live incident, longer for a scheduled review.
-- **Environment tag** — confirm the exact literal your stack uses for production before
-  querying. A near-miss on the tag value returns zero rows and looks identical to a clean
-  system; verify the tag returns *some* data before concluding anything is healthy.
+## Before you start
 
-## Phase 1 — Aggregate, never enumerate
+Read the `## Observability capabilities` section of the project's `CLAUDE.md` for the error
+aggregator, production tag, known gaps, work tracker and vendor adapter. If the adapter row
+names a plugin, use its triage skill for the queries and this skill for the formats. If the
+section is missing, ask for those rows in one question and continue; the template is in the
+`incident-declaration` skill (`references/capabilities.md`).
 
-**Ask for counts before you ask for records.** A window of production errors can be
-millions of lines; pulling them is slow, expensive, and buries the finding.
+Settle the inputs:
 
-Query your error aggregator for the window, filtered to production and error-level
-severity, **grouped by error signature**, returning counts per group, ordered descending.
-For each group also capture first-seen, last-seen, and no more than three to five sample
-records for later reading.
+- **Scope:** one service, a named set, or everything in production (default).
+- **Window:** default the last 24 hours; shorter during a live incident, longer for a scheduled
+  review.
+- **Production tag:** the exact literal your stack uses. Run one query that should return rows
+  and confirm it does, because a near-miss on the tag returns zero rows and looks identical to a
+  healthy system.
 
-An **error signature** is the most stable identifier available, in this order of
-preference:
+Without telemetry access (no credentials, tool denied, or a web session), ask the user to paste
+an export grouped by error signature with counts, distinct users, and first and last seen, or
+raw log lines to group yourself. Label every number "pasted" and name any part of scope the
+export does not cover.
 
-1. An explicit error type or event-type field, if your services emit one.
-2. Exception class plus the top application frame of the stack trace — skipping framework
-   and runtime frames, which are identical across unrelated bugs.
-3. The operation identity: endpoint or route plus status code, or job name plus failure
-   mode.
-4. The message text with variable parts normalized away — numbers, UUIDs, emails, paths,
-   timestamps replaced by placeholders. Without normalization every error is unique and
-   nothing clusters.
+## Phase 1: Aggregate before reading
 
-**Where errors are not searchable as text** — a component whose logs go somewhere your
-aggregator cannot reach, or a managed runtime that only exposes counters — cluster on the
-error *metric* for that component instead, and record in the output that the cluster came
-from a counter, not from log lines. Never report that you searched logs you cannot reach;
-name the gap and point at where those logs actually live.
+Ask for counts before records. A window of production errors can be millions of lines; pulling
+them is slow and expensive and buries the finding.
 
-## Phase 2 — Cluster, dedupe, rank
+Query the error aggregator for the window, filtered to production and error level, grouped by
+error signature, with counts per group in descending order. For each group also capture first
+seen, last seen, a distinct user count, and at most five sample records for later.
 
-**Merge.** Combine groups that are the same underlying fault under different signatures:
-the same exception from two instances of one service, one fault surfacing as both a
-timeout upstream and a connection reset downstream, retry storms that produce N errors per
-user action. Collapse those and note the merge; do not present the same bug three times.
+The signature is the most stable identifier available, in this order:
 
-**Apply a noise floor, out loud.** Drop clusters below a count threshold over the window
-— unless the sweep was scoped to a single service, where surfacing everything is the
-point. Always state the floor and how many clusters it removed. Silently truncating is
-how a low-count, high-severity cluster disappears.
+1. An explicit error-type or event-type field, if services emit one.
+2. Exception class plus the top application frame, skipping framework and runtime frames, which
+   are identical across unrelated bugs.
+3. The operation: route plus status code, or job name plus failure mode.
+4. The message with variable parts (numbers, UUIDs, emails, paths, timestamps) replaced by
+   placeholders. Without normalisation every error is unique and nothing clusters.
 
-**Rank by impact, not by count.** Count is the starting point, not the ordering. Adjust
-with:
+Where a component's errors are not searchable as text (logs the aggregator cannot reach, or a
+managed runtime that exposes only counters), cluster on its error metric instead, record the
+source as `metric`, and name where the real logs live. Report such a component as a gap, not as
+clean.
 
-- **Blast radius** — distinct users or tenants affected, and the failure share of the
-  affected path. Use the `blast-radius` skill's dimensions. A cluster with 40 events
-  across 40 customers outranks one with 4,000 events from a single looping client.
-- **Novelty** — is this new in this window, or has it been steady for months? New
-  clusters, and old clusters whose rate just changed, rank above flat background noise. A
-  cluster that appeared right after a deploy is the highest-value finding in any sweep.
-- **Trajectory** — growing beats flat beats recovering.
-- **Severity of the failure mode** — data loss, auth or authorization failures, and
-  silent wrong answers outrank retriable transport errors at the same volume.
+Then check for silence: compare request rate per service in scope with its usual level. A
+service that stopped serving produces no errors, so no error query finds it, and it is the most
+serious thing a sweep can find.
 
-Only after ranking, read the three-to-five saved samples for the top clusters to confirm
-each is what its signature suggests.
+## Phase 2: Cluster, apply the floor, rank
+
+**Merge** groups that are one fault under different signatures, and note each merge so the
+numbers stay reproducible:
+
+- the same exception from several instances or revisions of one service;
+- one fault seen as a timeout in the caller and a connection reset in the callee, starting in
+  the same minute;
+- a wrapped and an unwrapped form of the same root error;
+- a refactor that moved frames, so an old group goes quiet the minute a new one appears;
+- a retry loop producing N errors per user action; count per user and it collapses.
+
+When unsure, keep groups separate and say why, since a wrong merge hides a second fault.
+
+**Apply a noise floor and state it.** Drop clusters below a count threshold over the window,
+except in a sweep scoped to one service, where showing everything is the point. Report the
+floor and how many clusters it removed, because silent truncation is how a low-count,
+high-impact cluster disappears.
+
+**Rank** with these keys in order, using each later key to separate near-ties on the earlier
+ones. Raw count is only the final tie-breaker; sorting by it spends the sweep on the noisiest
+logger.
+
+1. **Override:** data loss or corruption, security or authorization failures, silent wrong
+   answers, and a service gone silent go to the top at any volume, because their harm is not
+   proportional to their count.
+2. **Blast radius:** distinct users or tenants, and the failure share of the path, measured as
+   in the `blast-radius` skill. Forty events across forty customers outranks four thousand from
+   one looping client. A cluster with users `?` is ranked on the other keys, and the table says
+   so.
+3. **Novelty:** new in the window, or an old cluster whose rate just stepped up. First seen just
+   after a deploy or config change is the strongest form; name the change.
+4. **Trajectory:** growing, then flat, then recovering.
+5. **Breadth:** a cluster that surfaces in more than one service points at a shared dependency,
+   which changes who owns the fix.
+6. **Count.**
+
+Only after ranking, read the saved samples for the top clusters to confirm each is what its
+signature suggests.
+
+If any cluster reflects current, confirmed production impact, pause the sweep and declare with
+the `incident-declaration` skill. Triage finds work; it does not replace declaring.
 
 Present the ranked table before proposing anything:
 
 ```
-#  Service            Signature                       Count  Users  Trend     First seen   Source
-1  checkout-api       TimeoutError @ PaymentClient      142     98  growing   2h ago       logs
-2  search-service     GET /suggest → 500                 38     31  flat      18h ago      traces
-3  export-worker      job failure counter                11      ?  new       40m ago      metric
+#  Service         Signature                        Count  Users  Trend      First seen        Source
+1  checkout-api    TimeoutError @ PaymentClient       142     98  growing    <time UTC>        aggregator
+2  search-service  GET /suggest → 500                  38     31  flat       <time UTC>        traces
+3  export-worker   job failure counter                 11      ?  new        <time UTC>        metric
+Floor: <n> events in <window>; <m> clusters below it. Merges: <which groups were combined>.
 ```
 
-## Phase 3 — Dedupe against existing work
+Closed values: Trend is `new | growing | flat | recovering`. Users is a distinct count or `?`
+(not measured). Source is `aggregator | logs | traces | metric | pasted`.
 
-For every cluster above the floor, search the work tracker for an open item covering it
-**before** proposing a new one. Search on the service name, the signature, and the
-user-visible symptom — the existing ticket was probably filed with different wording than
-your signature produced.
+## Phase 3: Dedupe against existing work
 
-Mark each cluster **NEW** or **DUPLICATE → <existing item>**. For duplicates, offer to add
-a comment recording the recurrence with a fresh count and window rather than filing again.
-A recurrence comment on a stale ticket is often more valuable than a new ticket, because
-it converts "reported once" into "still happening, at this rate."
+For every cluster above the floor, search the work tracker for an open item before proposing a
+new one. Search on the service name, the signature, and the user-visible symptom, because the
+existing item was probably filed in different words.
 
-## Phase 4 — Propose, and stop
+Mark each cluster with one of:
 
-**Write nothing yet.** Present the NEW clusters as an explicit multi-select and let the
-user choose which become tracked items. Show the fields you intend to use for each:
+- `NEW`
+- `DUPLICATE → <item>`: offer a recurrence comment with a fresh count and window. It turns
+  "reported once" into "still happening, at this rate", which is often worth more than a new
+  item.
+- `UNCHECKED`: the tracker could not be searched. Say why, and leave the duplicate check to the
+  user.
 
-- **Title** — `[prod] <service>: <signature> (<count> in <window>)`
-- **Body** — count, distinct users, first/last seen, the trend, the exact query used so
-  someone can re-run it, the sample records, and for counter-derived clusters, where the
-  real logs live.
-- **Parent / component / labels** — per your tracker's conventions, confirmed per item
-  rather than assumed. Do not invent a parent, an epic or a status value; use the ones
-  that exist.
-- **Owner** — per your team's convention. New items land in the default intake state; do
-  not auto-transition them into an active state, which is the owner's call.
+## Phase 4: Propose, then wait
 
-If any proposed cluster reflects **current, confirmed production impact**, stop triaging
-and declare an incident first — see the `incident-declaration` skill. Triage is the
-mechanism for finding work; it is not a substitute for declaring.
+Present the `NEW` and `UNCHECKED` clusters as a multi-select, plus the `DUPLICATE` clusters as
+comment offers, and let the user choose. Show each proposed item in full:
 
-## Phase 5 — File approved, then report
+```markdown
+**Title:** [prod] <service>: <signature> (<count> in <window>)
+- **Counts:** <count> events, <distinct users | not measured: why> users, <window>
+- **Seen:** first <time UTC>, last <time UTC>, trend <new | growing | flat | recovering>
+- **Change correlation:** <deploy or config change nearest first seen | none found within <n> min>
+- **Surfaces in:** <services>
+- **Source:** <aggregator | logs | traces | metric | pasted>; for `metric`, where the real logs live
+- **Query:** <the exact query, so anyone can re-run it>
+- **Samples:** <up to five records, or the representative stack trace trimmed to application frames>
+- **Tracker fields:** parent <…>, component <…>, labels <…>, owner <…>
+```
 
-Create only the approved items. Comment on the duplicates the user chose to annotate.
-Then report one table mapping every cluster to its outcome: new item + link, commented +
-link, or skipped with the reason. The skipped rows matter — they are the record of what
-was seen and consciously not acted on, which is what stops the next sweep from
-re-litigating the same noise.
+Take the parent, component, labels and statuses from the live tracker, confirmed per item,
+because values remembered from an earlier sweep may no longer exist. New items go into the
+tracker's intake state; moving them to an active state is the owner's decision.
 
-## Guardrails
+## Phase 5: File what was approved, then report
 
-- **Read-only until the approval gate.** Phases 1–3 only read. The only writes happen in
-  Phase 5.
-- **Aggregate-first, always.** Counts before records; at most five raw samples per
-  cluster; the tightest window that answers the question.
-- **Never report a gap as a clean result.** If a component's errors are not reachable from
-  your aggregator, say which component and where its data lives. Zero rows from a query
-  you could not run correctly is not zero errors.
-- **Never invent tracker vocabulary.** Parents, statuses, components and labels come from
-  the live tracker, not from memory of what they were last quarter.
-- **State the noise floor and the merges.** Every number you present should be
-  reproducible by someone re-running the query you printed.
+Create only the approved items and add only the approved comments. Then report every cluster
+above the floor, including the ones not acted on:
+
+```markdown
+| # | Cluster | Dedupe | Outcome | Link | Reason |
+|---|---------|--------|---------|------|--------|
+| 1 | checkout-api: TimeoutError @ PaymentClient | NEW | filed | <url> | |
+| 2 | search-service: GET /suggest → 500 | DUPLICATE → <item> | commented | <url> | |
+| 3 | export-worker: job failure counter | NEW | skipped | | not approved |
+```
+
+Outcome is one of `filed | commented | skipped`. Every `skipped` row has a reason. The skipped
+rows are the record of what was seen and consciously left alone, which saves the next sweep
+from re-arguing the same noise.
+
+## When something is unavailable
+
+- **No telemetry access:** work from a pasted export as described above. If nothing is pasted,
+  stop after Phase 1 and report which sources you could not reach; an empty result from a query
+  you could not run is not zero errors.
+- **Zero clusters above the floor:** report the floor, how many clusters it removed, and the
+  known gaps, and confirm the production tag returned data. Report "nothing above the floor",
+  not "healthy".
+- **No tracker access:** mark clusters `UNCHECKED` in Phase 3. In Phase 5, print each approved
+  item as ready-to-paste Markdown, and record it as `skipped` with the reason "tracker
+  unreachable: printed for manual filing".
+- **Nothing approved:** file nothing, and still print the outcome table with every row `skipped`
+  and the reason "not approved".
+- **A create call fails:** record that row as `skipped` with the error, keep going with the
+  rest, and list the failures at the end.
+
+## Examples
+
+<example>
+Situation: two groups, `ReadTimeout @ PaymentClient.charge` in checkout-api (142 events) and
+`ConnectionResetError` in payment-svc (131 events), both first seen at 13:02 UTC. Distinct users
+are 98 and 95, with 93 in common.
+
+Merge them into one cluster, `checkout-api → payment-svc: payment call fails (273 events, 100
+users)`, and record "Merges: payment-svc ConnectionResetError into checkout-api ReadTimeout
+(same start minute, same users)". Breadth: two services, so the owner is whoever owns
+payment-svc or the link between them, not the checkout team by default.
+</example>
+
+<example>
+Situation: cluster A has 4,000 events from 1 distinct user and has been flat for months.
+Cluster B has 40 events from 38 users, first seen twenty minutes after a deploy of search-service.
+
+B ranks first: blast radius (38 users against 1) decides it before novelty is even needed, and
+novelty agrees, since B's first seen sits just after a named change. A is one client in a retry
+loop; propose it only if no existing item covers it, and say that its 4,000 events are one
+user.
+</example>
+
+<example>
+Situation: the user approves items 1 and 3; the tracker returns 403 on create.
+
+```markdown
+| # | Cluster | Dedupe | Outcome | Link | Reason |
+|---|---------|--------|---------|------|--------|
+| 1 | checkout-api: payment call fails | NEW | skipped | | tracker unreachable (403 on create): printed for manual filing |
+| 2 | search-service: GET /suggest → 500 | UNCHECKED | skipped | | not approved |
+| 3 | export-worker: job failure counter | NEW | skipped | | tracker unreachable (403 on create): printed for manual filing |
+```
+
+Then print items 1 and 3 in the Phase 4 format, ready to paste.
+</example>
+
+## Verify
+
+After Phase 5:
+
+- Re-read each created item and each comment from the tracker, and confirm the title format,
+  parent, labels and intake state match what was approved, and that the link resolves.
+- Confirm the outcome table has one row per cluster above the floor, that every outcome is
+  `filed`, `commented` or `skipped`, and that every `skipped` row has a reason.
+- Confirm every count in the ranked table traces to a printed query or to "pasted".

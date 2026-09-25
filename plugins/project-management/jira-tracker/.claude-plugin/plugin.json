@@ -1,7 +1,7 @@
 {
   "name": "jira-tracker",
-  "version": "0.1.0",
-  "description": "Jira adapter for issue-tracker-core: the concrete REST API v3 calls for the pre-work gate, the comment trail, transitions, JQL sweeps and epic/parent hygiene.",
+  "version": "0.2.0",
+  "description": "Jira adapter for issue-tracker-core: the Jira calls for the pre-work gate, transitions, resolutions, the comment trail, JQL sweeps and parent hygiene, via the Atlassian MCP server, REST v3 or a pasted issue.",
   "author": {
     "name": "CatylAI",
     "email": "shawn@catylai.com"
@@ -12,6 +12,7 @@
     "atlassian",
     "issues",
     "jql",
+    "mcp",
     "project-management"
   ],
   "dependencies": [

@@ -1,497 +1,196 @@
 ---
 name: jira-issue-lifecycle
-description: "Carry out the pre-work gate and the issue comment trail against Jira Cloud with the REST API v3 — find or create a scoped assigned issue before writing code, read its full state including the comment thread, derive the branch name and change title from the key, post the start, handoff and finish comments in Atlassian Document Format, discover and run transitions, and close honestly. Use at the start of any implementation task in a Jira-tracked repository, when opening a change for review, when pausing mid-stream, and when work merges."
+description: "Runs the Jira calls for pre-work-gate and tracker-discipline: fetch, create, assign, move, comment on and close issues via Atlassian's MCP server, REST or a pasted issue. Use when starting, pausing or ending Jira work. Not for searches (use jira-jql); not for parents (use epic-and-parent-hygiene)."
 license: MIT
 ---
 
 # Issue Lifecycle on Jira
 
-`pre-work-gate` and `issue-lifecycle` in `issue-tracker-core` say what must be
-true and what must be recorded. This skill is how that happens against Jira
-Cloud.
+`issue-tracker-core` owns the rules: `pre-work-gate` (the four properties and the summary line)
+and `tracker-discipline` (the seven states, dedupe, parenting and the comment templates). This
+skill supplies the Jira calls for them, plus the Jira facts that change how the rules apply:
+status categories, resolutions, and transitions that differ per workflow.
 
-Every call below is literal except for the placeholders. Substitute `<SITE>`,
-`<PROJECT_KEY>` and `<KEY>`; change nothing else. Credentials come from
-`JIRA_EMAIL` and `JIRA_API_TOKEN` per the plugin root `SKILL.md`, and appear in
-no file.
+## Access
 
-For readability, each example writes the auth out in full. In a real session,
-set it once:
+Use the first path that works, and say once which one you are on.
 
-```bash
-JIRA_BASE="https://<SITE>.atlassian.net"
-JIRA_AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json")
+1. **Atlassian Rovo MCP server**, as a claude.ai connector or added in Claude Code. It acts as
+   the signed-in user and needs no token in the shell. Tool names, `cloudId` and the calling
+   rules: [references/atlassian-mcp.md](references/atlassian-mcp.md).
+2. **REST API v3 with an API token**, Claude Code only:
+   [references/rest-v3.md](references/rest-v3.md). Each block there reads `JIRA_SITE`,
+   `JIRA_EMAIL` and `JIRA_API_TOKEN` itself.
+3. **A pasted issue**, when neither is available (a web session without the connector, a denied
+   tool, no token). Ask for the key, summary, status, resolution, assignee, parent and its
+   status, description, and any comment that set or changed scope. Run the same checks with
+   `Source: pasted`, and print every write (transition, assignment, comment) for the user to
+   apply in Jira; none of it is recorded until they confirm.
+
+If an MCP call fails on sign-in, ask the user to reconnect and move to the next path rather
+than retrying.
+
+## Configure the project
+
+The core reads the `## Issue tracker` section of the project's `CLAUDE.md` (template:
+`references/tracker-config.md` in `issue-tracker-core:tracker-discipline`). For Jira, fill it as:
+
+| Setting | Jira value |
+| --- | --- |
+| Tracker | `jira-tracker` |
+| Project | The project key, and the site host when there is more than one site |
+| Ticket pattern | `<PROJECT_KEY>-[0-9]+`, for example `PROJ-[0-9]+` |
+| Intake state | The status a new issue lands in (read one back after creating it) |
+| Parent mechanism | `parent` field; name the level-1 type, usually Epic (see `epic-and-parent-hygiene`) |
+| Top-level items | The highest hierarchy level in use, and who approves a new one |
+
+The core's default pattern `[A-Z][A-Z0-9]+-[0-9]+` already matches Jira keys, but it also
+matches another project's keys or a branch such as `docs/RFC-2119-alignment`. The project key
+in the row avoids that.
+
+## Map the workflow onto the seven states
+
+Jira has no fixed states: each project's workflow defines statuses, and every status belongs to
+one of three categories, `new`, `indeterminate` or `done`. Read the project's statuses and
+resolutions once (MCP: ask `discover` for the project's statuses and resolutions; REST:
+`GET /rest/api/3/project/<KEY>/statuses` and `GET /rest/api/3/resolution`), then write the
+core's Status mapping table
+(`tracker-discipline` rule 2, Map, do not extend). Jira-specific points:
+
+- **`done` and `declined` share the `done` category.** The resolution tells them apart, so record
+  both halves: `done | Done + resolution Done`, `declined | Done + resolution Won't Do`.
+- **No review status:** carry `in-review` as `In Progress + linked PR`, as the core suggests.
+- **No parked status:** carry `parked` as an unresolved issue in a `new`-category status with a
+  `parked` label and a comment naming the revisit condition. A `done`-category status would make
+  it count as finished in every rollup.
+- Adding a status is a workflow edit for a Jira admin, not something to do from here.
+
+<example>
+Workflow statuses: Backlog (new), Selected for Development (new), In Progress (indeterminate),
+Code Review (indeterminate), Done (done). Resolutions: Done, Won't Do, Duplicate.
+
+| Core state | Tracker |
+|---|---|
+| backlog | Backlog |
+| ready | Selected for Development |
+| in-progress | In Progress |
+| in-review | Code Review |
+| done | Done + resolution Done |
+| parked | Backlog + label `parked` + revisit comment |
+| declined | Done + resolution Won't Do (or Duplicate, with a link to the original) |
+</example>
+
+## Gate calls
+
+`pre-work-gate` finds the key (branch, message, session) with the `Ticket pattern` row. Then:
+
+1. **Fetch** the issue (MCP `getJiraIssue`; REST section 3). You need summary, status name and
+   category, resolution, assignee, issue type, and the parent with its status. Not found or not
+   visible means `Exists` fails: ask which issue the work belongs to rather than creating one to
+   pass the gate.
+2. **Read the comments**, every page. A scope decision often lives in a comment rather than the
+   description (REST section 4 prints them as text and says whether the thread is complete).
+3. **Check the properties** with Jira's specifics:
+   - *Assigned:* an assignee is an `accountId`. Find one with `lookupJiraAccountId` or the
+     assignable-user search; never guess or reuse one.
+   - *Workable:* translate the status through the Status mapping. Without a mapping, ask; the
+     category alone cannot tell `ready` from `backlog` or `in-review` from `in-progress`.
+   - *Parented:* the parent's category is not `done` and its status is not the mapped `parked`
+     or `declined` one. Details in `epic-and-parent-hygiene`.
+4. **Print the core summary**, with `State: <core state> (<Jira status name>)`.
+
+<example>
+Branch `fix/PROJ-212-null-payload`. `getJiraIssue` returns status "Selected for Development"
+(category `new`), no assignee, parent PROJ-40 In Progress.
+
+```
+[PROJ-212] Intake parser crashes on empty payload
+State: ready (Selected for Development) · Assignee: unassigned · Parent: PROJ-40 · Source: tracker
+Gate: FAIL: assigned
 ```
 
-## Step 1 — Find the key
-
-Branch first, per the core's search order:
-
-```bash
-git branch --show-current
-```
-
-Match the result against the configured `CLAUDE_TICKET_PATTERN`. Jira keys match
-the core's default unchanged — see the plugin root `SKILL.md` for why this is the
-one tracker where nothing has to be configured:
-
-```bash
-git branch --show-current | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -1
-```
-
-That prints the key. No match means no key on the branch; fall through to the
-user's message, then to earlier session context, then ask. Do not invent one and
-do not attach to the nearest plausible issue.
-
-If the repository touches more than one Jira project, or a branch name contains
-something else key-shaped, narrow the expression to your own project key rather
-than taking the first match on trust.
-
-## Step 2 — Fetch the issue, do not trust the key
-
-A key proves someone typed a string. Read the issue:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>?fields=summary,status,assignee,issuetype,parent,labels,priority,resolution,created,updated"
-```
-
-A `404` means the issue does not exist or you cannot see it. Stop and ask; do
-not create one to make the gate pass.
-
-Render the one-line summary the core requires before doing anything else:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>?fields=summary,status,assignee" \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); f=d["fields"]; a=f.get("assignee") or {}; print(f"[{d[\"key\"]}] {f[\"summary\"]} — Status: {f[\"status\"][\"name\"]} — Assignee: {a.get(\"displayName\",\"unassigned\")}")'
-```
-
-Two fields on that response are load-bearing and easy to skim past:
-
-- `fields.status.statusCategory.key` is one of `new`, `indeterminate` or `done`.
-  That is the *category*, and it is what liveness checks must filter on — see
-  `jira-jql`. `fields.status.name` is the project's own label for the status and
-  is configurable per workflow.
-- `fields.resolution` is `null` on an unresolved issue. An issue can sit in a
-  status whose name sounds terminal while carrying no resolution; the two are
-  separate fields and they disagree more often than teams expect.
-
-## Step 3 — Read the full state, including comments
-
-The gate's scope check needs the comment thread, not just the description. A
-scope negotiation from three weeks ago lives there.
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/comment?orderBy=created&maxResults=50"
-```
-
-The comment list is paginated: the response carries `startAt`, `maxResults` and
-`total`. **If `total` exceeds what you fetched, you read a prefix of the thread
-and the scope negotiation may be in the part you skipped.** Page with `startAt`
-rather than concluding from the first page.
-
-Descriptions and comment bodies come back as Atlassian Document Format — a JSON
-tree, not a string. To read the prose rather than the tree, either walk the
-`content` array, or request the v2 representation, which renders the same field
-as a plain string:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/2/issue/<KEY>?fields=summary,description"
-```
-
-**Flagged:** `/rest/api/2/` remains available on Jira Cloud and is the pragmatic
-way to read and write text without building ADF. Its long-term status relative to
-v3 has been signalled more than once, so treat it as a convenience rather than a
-foundation: read with v2 if you like, but keep writes on v3 with real ADF so a
-deprecation does not silently change what your comments look like.
-
-## Step 4 — Satisfy the gate
-
-Four properties, four repairs.
-
-**Exists** — Step 2 returned `200`.
-
-**Assigned** — if `fields.assignee` is `null`, or is not whoever is doing the
-work. Assignment is its own endpoint and takes an `accountId`, never a username
-or an email:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X PUT -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/assignee" \
-  --data '{"accountId": "<ACCOUNT_ID>"}'
-```
-
-Get your own `accountId` from `GET /rest/api/3/myself`. Get someone else's from
-the assignable-user search, which is scoped to people who can actually hold the
-issue:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/user/assignable/search?project=<PROJECT_KEY>&query=<NAME_OR_EMAIL>"
-```
-
-**Never hardcode an `accountId`.** It is per-person and per-site, it is not
-guessable, and a wrong one either fails or silently assigns work to a stranger.
-
-**Workable state** — transition it, per Step 5. Do this before the first edit to
-a source file, not at the end of the session.
-
-**Parented** — see `epic-and-parent-hygiene`. Checking that `fields.parent`
-exists is not enough; a parent in a terminal state reads as compliant and is not.
-
-### When no suitable issue exists
-
-Create one. A created issue is scoped, assigned and parented in the same call,
-because a follow-up step is the step that does not happen.
-
-First discover what this project accepts — you cannot write a create call without
-the issue-type IDs, and they differ per site:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/createmeta/<PROJECT_KEY>/issuetypes"
-```
-
-Then create, substituting the `id` you just read:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue" \
-  --data @- <<'JSON'
-{
-  "fields": {
-    "project":   { "key": "<PROJECT_KEY>" },
-    "issuetype": { "id": "<ISSUE_TYPE_ID>" },
-    "assignee":  { "accountId": "<ACCOUNT_ID>" },
-    "parent":    { "key": "<EPIC_KEY>" },
-    "summary":   "Retry transient upstream failures in the ingestion worker",
-    "description": {
-      "type": "doc",
-      "version": 1,
-      "content": [
-        { "type": "heading", "attrs": { "level": 2 },
-          "content": [ { "type": "text", "text": "Problem" } ] },
-        { "type": "paragraph",
-          "content": [ { "type": "text", "text": "The ingestion worker aborts the batch on the first transient upstream 503." } ] },
-        { "type": "heading", "attrs": { "level": 2 },
-          "content": [ { "type": "text", "text": "Acceptance" } ] },
-        { "type": "bulletList", "content": [
-          { "type": "listItem", "content": [ { "type": "paragraph", "content": [
-            { "type": "text", "text": "Transient 5xx responses are retried with backoff, bounded at 5 attempts." } ] } ] },
-          { "type": "listItem", "content": [ { "type": "paragraph", "content": [
-            { "type": "text", "text": "A permanently failing record is quarantined, not retried forever." } ] } ] }
-        ] }
-      ]
-    }
-  }
-}
-JSON
-```
-
-The response carries `{"id": ..., "key": "<KEY>", "self": ...}`. Keep the `key`.
-
-Three things that go wrong here every time:
-
-- **`issuetype` by `id`, not by `name`.** Names are editable and duplicated
-  across projects; the id is stable within the site. You read it from createmeta
-  one step earlier, so there is no reason to guess.
-- **A field that is required by the project's screen but absent from your body
-  returns `400` naming the field id**, often as `customfield_NNNNN` with no hint
-  what it is. Resolve it against
-  `GET /rest/api/3/issue/createmeta/<PROJECT_KEY>/issuetypes/<ISSUE_TYPE_ID>`,
-  which lists the fields for that type, and against `GET /rest/api/3/field` for
-  the human name.
-- **A new issue lands in the project's configured initial status**, whatever that
-  is. It is not necessarily the one you want, and it is not "backlog" because you
-  expected backlog. Read the status back.
-
-Creating a new issue does not exempt you from the scope check — it *is* the scope
-check's remedy. If the user asked for one thing and an existing issue covers a
-different thing, the correct output is a new issue plus a sentence saying which
-issue the work now attaches to.
-
-## Step 5 — Transitions, which are per-workflow and must be discovered
-
-Jira has no fixed set of states. A project's workflow defines its statuses, and a
-*transition* is an edge between them with its own numeric id. **Those ids are
-configuration, not content: they differ per workflow, and an administrator
-editing the workflow changes them without telling anyone.**
-
-So discover, every time, from the issue in hand:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/transitions" \
-  | python3 -c 'import sys,json; [print(t["id"], "->", t["to"]["name"], "|", t["to"]["statusCategory"]["key"]) for t in json.load(sys.stdin)["transitions"]]'
-```
-
-That endpoint returns **only the transitions available from the issue's current
-status**, which is itself the useful signal: an empty list, or a list missing the
-edge you expected, means the workflow does not allow the move you were about to
-make, not that the API failed.
-
-Then execute by id:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/transitions" \
-  --data '{"transition": {"id": "<TRANSITION_ID>"}}'
-```
-
-A successful transition returns `204 No Content` — **no body, which means no
-confirmation of where the issue landed.** The core requires reading back anything
-automation claimed to do, and this is the clearest case for it:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>?fields=status,resolution" \
-  | python3 -c 'import sys,json; f=json.load(sys.stdin)["fields"]; r=f.get("resolution") or {}; print(f["status"]["name"], "|", f["status"]["statusCategory"]["key"], "| resolution:", r.get("name","none"))'
-```
-
-Notes that save a debugging session:
-
-- **A transition screen can require fields.** If the workflow puts a screen on
-  the transition, the `POST` must carry them in a `fields` object alongside
-  `transition`, and it `400`s naming them otherwise. `GET .../transitions?expand=transitions.fields`
-  tells you in advance which transitions have one.
-- **Assignee is commonly not on the transition screen.** Where it is not, a
-  combined transition-plus-assign call fails. Transition first, then assign (or
-  the reverse) — two calls, not one.
-- **Cancelling counts as a transition too.** There is no separate "close"
-  endpoint; abandoning an issue is a move to a terminal status like any other.
-
-## Step 6 — Mapping the core's vocabulary onto this project's workflow
-
-`status-vocabulary` defines seven states and forbids inventing an eighth. Jira
-defines whatever the project's workflow says. The mapping belongs here, in the
-adapter, and belongs written down per project rather than assumed:
-
-| Core state | What to map it to | How to find the local name |
-| --- | --- | --- |
-| Backlog | The project's initial status | Create a scratch issue and read its status back, or read the workflow |
-| Ready | A prioritised-not-started status | `GET /rest/api/3/status` for the project's set |
-| In progress | The status whose category is `indeterminate` and which the team means by "started" | Category alone is ambiguous; ask the team |
-| In review | A distinct status, if one exists | Many workflows have none — see below |
-| Done | A `done`-category status with a completion resolution | `GET /rest/api/3/resolution` |
-| Parked | A `new`- or `indeterminate`-category deferral status | Often absent; see below |
-| Declined | A `done`-category status with a not-doing resolution | The *resolution* is what distinguishes it from Done |
-
-Two mappings that routinely fail, and what to do rather than pretend:
-
-- **No review status.** Where the workflow has none, "in review" is carried by
-  the linked change plus a comment, and the issue stays in progress. Say that in
-  the repository's own docs. Do not add a status — that is a workflow edit, it is
-  an admin action, and `status-vocabulary` rule 2 forbids inventing one locally.
-- **No parked status.** Where the workflow has none, parked is an unresolved
-  issue with a comment naming the revisit condition. **Do not transition it to a
-  `done`-category status to get it off the board.** The core is explicit that
-  collapsing finished and abandoned destroys the only signal that tells you
-  whether the backlog is shrinking because work is landing or because work is
-  being dropped — and in Jira that collapse is especially invisible, because a
-  `done` category looks identical in every rollup regardless of resolution.
-
-**The resolution field is where finished and abandoned actually live.** Two
-issues can share one `done`-category status and differ entirely in `resolution`.
-Set it deliberately on the closing transition; a `null` resolution on a closed
-issue is the Jira spelling of "closed with no reason recorded".
-
-## Step 7 — Branch, title, scope
-
-The core's rule: the key must be recoverable from the branch name.
-
-```bash
-git switch -c fix/PROJ-123-retry-ingestion-worker
-```
-
-Everything downstream is then mechanical:
-
-| Artefact | Value | Derived how |
-| --- | --- | --- |
-| Commit scope | `PROJ-123` | The pattern match on the branch |
-| Change title | `fix(PROJ-123): retry transient upstream failures` | Type from the branch prefix, scope from the key |
-| Tracker comment | Links the change to `PROJ-123` | Posted by Step 8 |
-| Later search | `git log --grep PROJ-123`, plus one JQL on the key | One token, two systems |
-
-The prefix-to-type mapping is the core's: `feature` → `feat`, `fix` → `fix`,
-`refactor` → `refactor`, `chore` → `chore`, `docs` → `docs`.
-
-Recover the whole set from a branch in one go:
-
-```bash
-branch=$(git branch --show-current)
-key=$(grep -oE '[A-Z][A-Z0-9]+-[0-9]+' <<< "$branch" | head -1)
-type=${branch%%/*}
-echo "key=$key branch-prefix=$type"
-```
-
-If `key` comes back empty, the branch predates the convention. Per the core: ask
-for the key, then fix the change title rather than renaming a branch someone else
-may have checked out.
-
-**Jira does not close an issue from a commit message on its own.** Unlike forges
-with closing keywords, mentioning the key in a commit or a merge request links
-the two (where the development integration is installed) but does not transition
-anything. The transition is a call you make — Step 5 — or an automation rule the
-project has configured. Find out which, once, and write it down; assuming the
-automation exists is how an issue sits in progress a week after its change
-merged.
-
-## Step 8 — The comment trail
-
-Three comments are mandatory. In v3 a comment body is ADF, so the simple case
-looks like this:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/comment" \
-  --data @- <<'JSON'
-{
-  "body": {
-    "type": "doc",
-    "version": 1,
-    "content": [
-      { "type": "paragraph", "content": [
-        { "type": "text", "text": "Starting on fix/PROJ-123-retry-ingestion-worker. Plan: wrap the existing upstream client in a bounded retry with exponential backoff, so no call site changes. The description assumes the worker already distinguishes transient from permanent failures — it does not, so this adds that classification first." }
-      ] }
-    ]
-  }
-}
-JSON
-```
-
-Building that by hand for a multi-paragraph comment is miserable and error-prone.
-Build it in Python instead, so prose containing quotes, backticks and `$` never
-has to survive shell quoting:
-
-```bash
-python3 - <<'PY' > /tmp/jira-comment.json
-import json
-paras = [
-    "Pausing here. Retry wrapper is written and unit-tested. The integration "
-    "test against the staging queue fails on expired fixtures, which is "
-    "unrelated to this change.",
-    "Next step: refresh the queue fixtures, then open the change for review.",
-]
-body = {"type": "doc", "version": 1, "content": [
-    {"type": "paragraph", "content": [{"type": "text", "text": p}]} for p in paras
-]}
-print(json.dumps({"body": body}))
-PY
-
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/comment" \
-  --data @/tmp/jira-comment.json
-```
-
-**Validate the file before sending it.** A generator that raised half way through
-leaves a truncated or empty file, and `--data @file` will send it — producing a
-`400` that reads like an API problem rather than a build problem:
-
-```bash
-python3 -c 'import json,sys; json.load(open(sys.argv[1]))' /tmp/jira-comment.json \
-  || { echo "STOP: comment payload not built — not sending"; exit 1; }
-```
-
-The three moments, per `issue-lifecycle`:
-
-| Moment | The comment contains | Paired with |
-| --- | --- | --- |
-| **Start** | The approach, anything the description got wrong, the branch name | Transition to the in-progress status |
-| **Handoff / pause** | Where things stand, what is known-broken, the single next step | Transition out of in-progress, or an explicit statement that it stays there and why |
-| **Finish** | The link to the merged change and confirmation that acceptance is met | Transition to the terminal status, with a resolution |
-
-What does not get a comment: "still working on this". The core is explicit that
-routine progress noise trains readers to skim the thread, which is how a real
-comment gets missed.
-
-### Verify the comment landed
-
-`POST .../comment` returns `201` with the created comment, so success is visible
-— but when the post went through a wrapper, a hook or an agent, read it back:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/comment?orderBy=-created&maxResults=1"
-```
-
-### Visibility restrictions
-
-A comment can be restricted to a role or group with a `visibility` object. Use it
-only where the content genuinely requires it, and remember what it costs: **a
-restricted comment is invisible to readers outside that role, so a thread that
-reads as complete to you may be missing its decisive comment for everyone else.**
-The core's whole claim is that the issue is the durable record; a record only
-some readers can see is a weaker one.
-
-## Step 9 — Closing, and reopening
-
-Closing is a transition to a terminal status *plus* a resolution, in the same
-call, so there is no window in which the issue is closed with no reason:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/transitions" \
-  --data '{
-    "transition": { "id": "<TRANSITION_ID>" },
-    "fields":     { "resolution": { "name": "<RESOLUTION_NAME>" } }
-  }'
-```
-
-Resolution names are per-site — read them from `GET /rest/api/3/resolution` and
-use the one your team means by *finished* versus the one it means by *not
-doing*. That distinction is the one `status-vocabulary` says must survive any
-mapping, and in Jira the resolution field is the only place it lives.
-
-Reopening is a transition back, and it must also retract the resolution — an
-issue that is open again while still carrying a completion resolution asserts two
-contradictory things at once:
-
-```bash
-curl -sS -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
-  -X POST -H "Content-Type: application/json" \
-  "https://<SITE>.atlassian.net/rest/api/3/issue/<KEY>/transitions" \
-  --data '{
-    "transition": { "id": "<TRANSITION_ID>" },
-    "fields":     { "resolution": null }
-  }'
-```
-
-**Flagged as instance-dependent:** whether `resolution: null` is accepted on a
-transition, and whether the workflow clears it for you, depends on the transition's
-post-functions and screens. Read the issue back and confirm `fields.resolution`
-is `null`; if it is not, clear it with a separate `PUT /rest/api/3/issue/<KEY>`
-edit, and say in the comment that you did.
-
-Reopening does not re-derive a branch. If the original branch merged and was
-deleted, cut a new one against the same key. Two branches, one key, one history:
-that is the convention working, not a violation of it.
-
-## Common failures
-
-| Symptom | Cause | Repair |
-| --- | --- | --- |
-| `404` on an issue you can see in the browser | Wrong site host, or the token's account lacks Browse Projects on that project | Re-check `<SITE>`; confirm the account with `GET /rest/api/3/myself` |
-| `400` naming `customfield_NNNNN` on create | A field required by the project's create screen is missing | Resolve the id with `GET /rest/api/3/field`; read the required set from createmeta |
-| `400` on transition, naming fields | The transition has a screen | Re-request transitions with `expand=transitions.fields` and send them |
-| Transition returns `204`, issue did not move | The id came from a cached list taken at a different status, or from another project's workflow | Re-discover transitions from the issue in hand, every time |
-| Comment posts but renders as one run-on block | ADF built as a single text node with newlines in it | One `paragraph` node per paragraph; ADF ignores `\n` inside a text node |
-| Closed issue shows no reason anywhere | Transition ran without a `resolution` | Reopen, then close again with the resolution set |
-| Gate finds a key that belongs to another project | `CLAUDE_TICKET_PATTERN` left at the permissive default in a multi-project repo | Tighten it to `<PROJECT_KEY>-[0-9]+` per repository |
-
-## Handoffs
-
-- Writing any query, including the sweeps this gate depends on: `jira-jql`.
-- Parents, epics and the orphan sweep: `epic-and-parent-hygiene`.
-- What a state is claiming and when it may advance: `status-vocabulary` in
-  `issue-tracker-core`.
-- Branch and title derivation in the general case:
-  `branch-and-title-conventions`, same plugin.
+Offer to assign it to the user (their `accountId` from the lookup), then transition it to
+In Progress and post the start comment, reading the issue back after each write.
+</example>
+
+## Create an issue
+
+1. Run `tracker-discipline` § Dedupe before creating first; `jira-jql` has the query.
+2. Pick the issue type from the project's metadata (`listJiraProjectIssueTypesMetadata`; REST
+   createmeta), and read the required fields for that type. A create that fails naming
+   `customfield_NNNNN` is missing one of those.
+3. Create in one call with project, type, summary, description, assignee and `parent`
+   (`tracker-discipline` § Parenting, step 5).
+4. Read it back: note the key, the status it landed in, and that the parent is live.
+
+## Transitions
+
+Transition ids belong to a workflow and change when an admin edits it, so list them from the
+issue in hand every time (`getTransitionsForJiraIssue`; REST section 6). The list holds only the
+moves allowed from the current status. When the move you want is missing, the workflow does not
+allow it from here: tell the user rather than chaining other transitions to get there.
+
+A transition can carry a screen with required fields (often the resolution). The assignee is
+often not on that screen, so assign in a separate call. A successful transition returns no
+body, so read the status and resolution back.
+
+## Comments
+
+Use the three templates in `tracker-discipline` § Comment trail (start, handoff, finish) with
+the state move each one explains. Through MCP, `addOrEditJiraIssueComment` takes Markdown.
+Through REST, the body is Atlassian Document Format with one paragraph node per paragraph;
+REST section 7 builds it. Keep comments unrestricted unless the content requires a role or
+group restriction, because a restricted comment is invisible to everyone outside it.
+
+## When the change merges
+
+A Jira issue moves only when something moves it. Find out which of these the project uses, and
+note it in the `## Issue tracker` section:
+
+1. **An explicit transition** at finish, with the finish comment.
+2. **A Jira automation rule**, for example on "pull request merged". An admin configures it.
+3. **Smart Commits**, a Jira feature: a commit line such as `PROJ-123 #comment Fixed the retry
+   bound` or `PROJ-123 #<transition-name>` acts on the issue when the commit reaches a connected
+   repository. It works only when an admin has enabled Smart Commits on the source integration
+   and the commit email matches a Jira user; confirm with the team before relying on it.
+
+Branch names, commit scopes and PR titles carry the key per
+`issue-tracker-core:branch-and-title-conventions`. Where a development integration (GitHub for
+Jira, GitLab, Bitbucket) is installed, that key is what links the branch, commits and PR to the
+issue. Jira has no closing keyword, so whichever option applies, read the issue back after merge.
+
+## Close and reopen
+
+Close with the transition and the resolution in the same call, so the issue never sits closed
+without a reason: the finished resolution for `done`, the not-doing one for `declined`. Reopen
+with the transition back and the resolution cleared; if the read-back still shows a resolution,
+clear it with an edit and say so in a comment. REST section 6 has both calls.
+
+<example>
+PROJ-77 was closed as Done yesterday; the fix regressed. The team reopens it.
+Transition PROJ-77 back to In Progress with the resolution cleared, read it back
+(status In Progress, category `indeterminate`, resolution none), and comment: "Reopened: the
+retry bound regressed in the 2.3 release. Next step: add a test for the 5-attempt limit."
+</example>
+
+## Failure paths
+
+| Situation | Response |
+| --- | --- |
+| No MCP tools, no token, no paste yet | Ask the user to paste the issue (Access, path 3). |
+| MCP sign-in expired | Ask for `/mcp` sign-in or a reconnect at claude.ai/customize/connectors; continue on the next path. |
+| Permission denied on a write | Report which write and print it for the user to apply in Jira. |
+| Transition not offered | Say the workflow does not allow it from the current status; ask how to proceed. |
+| A write succeeded but the read-back shows no change | A parameter was dropped or wrong; check the schema or REST body and repeat once. |
+
+## Verify
+
+After every write, read the issue back and check:
+
+- the status translates, through the Status mapping, to the core state you intended;
+- the resolution is set for `done` and `declined` and empty for live states;
+- the assignee is the intended `accountId`;
+- the newest comment is the one you posted;
+- a new or changed parent exists and is live.
+
+From pasted data, print the same checklist for the user to confirm after they apply the change.

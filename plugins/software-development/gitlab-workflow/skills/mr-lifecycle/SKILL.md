@@ -30,14 +30,17 @@ Otherwise the description says what changed and why, plus how it was verified. W
 which avoids quoting trouble:
 
 ```bash
-glab mr create --target-branch <default-branch> --title "<issue key>: <what changed>" \
+glab mr create --target-branch <default-branch> --title "<type>(<KEY>): <description>" \
   --description-file <path> --remove-source-branch --yes
 ```
 
-`--yes` skips the confirmation prompt, which otherwise waits forever without a terminal. If the
-branch name starts with an issue key (`PROJ-123-...`), put that key at the start of the title;
-otherwise write a plain title and do not make up a key. Add `--draft` when the work is incomplete;
-`glab mr update <iid> --ready` flips it later (and `--draft` flips it back).
+`--yes` skips the confirmation prompt, which otherwise waits forever without a terminal. Take the
+title shape from `issue-tracker-core:branch-and-title-conventions` when it is installed:
+`<type>(<KEY>): <description>`, with the key taken from a `<prefix>/<KEY>-<summary>` branch. With no
+key, write `<type>(<component>): <description>` or `<type>: <description>` per
+`dev-standards:commit-standards`. Use a key only when the tracker or the user supplied it. Add
+`--draft` when the work is incomplete; `glab mr update <iid> --ready` flips it later (and `--draft`
+flips it back).
 
 ## Read state
 

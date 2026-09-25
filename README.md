@@ -1,79 +1,76 @@
-# CatylAI Plugins for Claude Code and Cowork
+# CatylAI Plugins for Claude Code
 
-Business-workflow plugins by [CatylAI](https://catylai.com), built to work in **both**
-[Claude Code](https://code.claude.com) and **Cowork** (Claude Code on the web).
-
-Every capability in this marketplace is a **Skill**. Skills load on both surfaces, so the
-same plugin behaves the same whether you are in a terminal or a browser.
+Engineering and operations plugins by [CatylAI](https://catylai.com) for
+[Claude Code](https://code.claude.com): review pipelines, guardrails, engineering standards,
+Terraform on AWS, issue trackers and incident response.
 
 ## Install
 
-### Claude Code (terminal, desktop app, VS Code)
-
 ```
 /plugin marketplace add CatylAI/claude-marketplace
-/plugin install hiring@catylai
+/plugin install <plugin>@catylai
 ```
 
-### Cowork / web
-
-`/plugin` is **not available** in web sessions, so there is nothing to type. Enable the
-plugin for your claude.ai account and Claude Code loads it automatically as a synced
-plugin the next time you start a session.
-
-If Claude tells you `/plugin` isn't available in this environment, you are on a surface
-that installs from your account rather than from the session. That is expected.
+For example, `/plugin install dev-standards@catylai`. On the web (Cowork, claude.ai), `/plugin`
+isn't available: enable the plugin on your claude.ai account and it arrives as a synced plugin.
 
 ## Plugins
 
+### Software development
+
 | Plugin | What it does |
 |--------|--------------|
-| `hiring` | Job descriptions, structured interview scorecards, resume screening |
-| `sales` | Discovery call prep, objection handling |
-| `marketing` | Campaign briefs, brand voice enforcement |
-| `software-development` | Architecture decision records, code review checklists |
-| `customer-support` | Ticket replies, escalation triage |
-| `finance` | Budget variance analysis, budget and spend reviews |
-| `it-ops` | Runbooks, blameless incident postmortems |
-| `project-management` | Status reports, risk registers |
+| `claude-craft` | Agent SDK design rules, plus audits of skills, agents, hooks and config |
+| `code-review-core` | Forge-neutral review pipeline: detectors, judgement agents, one verdict owner |
+| `dependency-upgrades` | Dependency and runtime upgrades: support-status ranking, test-adequacy gate, one change per commit |
+| `dev-guardrails` | Hooks that block secret leaks, destructive git and non-conventional commits |
+| `dev-mcp-servers` | Standard MCP servers, pinned: Playwright for driving a real browser |
+| `dev-standards` | Engineering standards: agent contracts, review rubric, commit and test discipline |
+| `engineering-workflows` | Root-cause debugging, design intake and plans, release trains, repo walkthroughs, handoffs |
+| `github-workflow` | GitHub transport: `gh pr` lifecycle, posting review findings, Actions authoring |
+| `gitlab-workflow` | GitLab transport: `glab mr` lifecycle, posting review findings, CI authoring |
+| `project-scaffold` | Project and ADR init, POC lifecycle that ends in a decision |
+| `snowflake-connector` | Read-only Snowflake access via its managed MCP server or the `snow` CLI |
+| `terraform-aws` | Terraform on AWS: module and backend layout, IAM boundaries, OIDC trust, plan review |
+
+### Project management
+
+| Plugin | What it does |
+|--------|--------------|
+| `issue-tracker-core` | Tracker-neutral discipline: advisory pre-work gate, branch and PR title conventions, status vocabulary, dedupe and parenting |
+| `github-issues` | GitHub issues, labels, milestones, sub-issues, Projects v2 |
+| `jira-tracker` | Jira adapter for issue-tracker-core |
+
+### IT operations
+
+| Plugin | What it does |
+|--------|--------------|
+| `observability-core` | Vendor-neutral incident discipline: declare, size blast radius, triage |
+| `datadog-observability` | Datadog adapter for observability-core |
+| `gcp-observability` | Google Cloud Logging, Monitoring and Error Reporting adapter for observability-core |
+| `ops-workflows` | Runbooks and blameless incident postmortems |
 
 ## What works where
 
-| | Claude Code | Cowork / web |
+Skills load everywhere. Some parts of a plugin run only in Claude Code:
+
+| Part | Claude Code | Web (Cowork, claude.ai) |
 |---|:---:|:---:|
-| Skills, including the `/plugin:name` ones | yes | yes |
-| Connectors (Gmail, Slack, Calendar, and the rest) | yes | yes |
-| Reading and writing files in a checkout | yes | no |
-| Running commands (git, python) | yes | no |
+| Skills and `/plugin:skill` commands | yes | yes |
 | Subagents | yes | no |
+| Hooks | yes | no |
+| Local (stdio) MCP servers | yes | no |
 
-Skills are the unit that travels. What a skill can *reach* differs: in Claude Code it can
-open your repository and run commands, while in Cowork it works from the conversation and
-from whatever Connectors you have enabled.
-
-Two skills lean on a local checkout and give a thinner answer without one:
-
-- `finance`, budget variance analysis, which computes from a CSV you point it at
-- `project-management`, status reports, which can read `git log` for evidence
-
-Both still work in Cowork if you paste the data in. The rest do not care where they run.
-
-One capability is Claude Code only: the `resume-screener` subagent in `hiring`. The
-`interview-scorecard` skill in the same plugin works everywhere.
+Plugins with Claude Code-only parts: `dev-guardrails` (hooks), `code-review-core` (agents and
+hooks), `dev-mcp-servers` (a local MCP server), and one agent each in `claude-craft`,
+`engineering-workflows`, `project-scaffold`, `datadog-observability` and `gcp-observability`.
+Each plugin's README says what still works without them. Skills that read a repository or call a
+CLI also work from data you paste in.
 
 ## Using them
 
-You do not need to memorise commands. Describe what you want and the matching skill loads
-itself:
-
-```
-"Draft a job description for a senior SRE, remote, reporting to me"
-"Help me prep for a discovery call with Acme next Tuesday"
-"Write a postmortem from these incident notes"
-```
-
-In Claude Code you can also type `/` to browse them, for example
-`/hiring:job-description`.
+Describe what you want and the matching skill loads itself, or type `/` in Claude Code to browse
+them, for example `/dev-standards:commit-standards`.
 
 ## Updates
 
@@ -82,9 +79,7 @@ In Claude Code you can also type `/` to browse them, for example
 /plugin update <plugin>@catylai
 ```
 
-In Cowork, updates arrive with the synced plugin. There is nothing to run.
-
 ## Feedback
 
-Open an issue in this repository. This repo is a published release: pull requests are
-welcome as suggestions, but changes land through CatylAI's release process.
+Open an issue in this repository. It holds published releases: pull requests are welcome as
+suggestions, but changes land through CatylAI's release process.

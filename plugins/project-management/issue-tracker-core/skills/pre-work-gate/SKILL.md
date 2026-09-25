@@ -1,96 +1,131 @@
 ---
 name: pre-work-gate
+description: "Checks that a real, assigned, in-scope issue backs a change before the first edit; advisory, skipped when the repo has no tracker. Use when starting implementation, a fix or refactor. Not for tracker calls (use github-issues or jira-tracker); not for branch names (use branch-and-title-conventions)."
+allowed-tools: Bash(git branch --show-current), Bash(printenv CLAUDE_TICKET_PATTERN)
 license: MIT
-description: The blocking check that runs before any development work — confirm a tracked issue exists, is assigned, sits in a workable state, and actually covers the request, before writing code, editing source, creating a branch or starting a refactor. Use at the start of any implementation task, and whenever a request arrives with no issue key attached.
 ---
 
 # Pre-Work Gate
 
-The highest-value habit in tracker discipline, and the cheapest to skip. Run it
-**before** the first edit, not after the change is written and someone asks what
-it was for.
+Before the first change to the repository, confirm that a tracked item backs the work and
+covers what was asked. Checking first costs one question; finding out afterwards costs a
+retroactive item written from memory.
 
-## When the gate applies
+This gate is advice. A skill cannot stop an edit; only a hook can, and this plugin ships none.
+So the gate works by asking before acting, and the user can always choose to proceed without an
+item. When they do, record that choice in the summary line and carry on.
 
-Any task that changes the repository: writing code, editing source or config,
-creating a branch or worktree, implementing a feature, fixing a defect,
-refactoring, or bumping a dependency.
+## When it applies
 
-## When it does not
+Any task that changes the repository: writing or editing code or config, creating a branch or
+worktree, fixing a defect, refactoring, or bumping a dependency.
 
-- Read-only exploration: reading files, answering questions about the codebase.
-- Reviewing someone else's change.
-- Triage, grooming, or estimating in the tracker itself.
-- Documentation-only questions where nothing is written.
-- Inspecting build output, logs or infrastructure plans without changing them.
-
-If you are unsure which side a task falls on, run the gate. A needless check
-costs one lookup; a missing one costs an untracked change.
+It does not apply to read-only work: exploring or explaining the code, reviewing someone else's
+change, triage or grooming in the tracker, or reading logs, build output or plans. If unsure,
+run it; a needless check costs one lookup.
 
 ## Procedure
 
-1. **Find the key.** Look in this order, stopping at the first hit:
-   - the current branch name, matched against the configured key pattern
-     (`CLAUDE_TICKET_PATTERN`, default `[A-Z][A-Z0-9]+-[0-9]+`);
+1. **Is there a tracker?** Read the `Tracker` row of the `## Issue tracker` section in the
+   project's `CLAUDE.md` (template: `references/tracker-config.md` in the `tracker-discipline`
+   skill).
+   - `none`: say once per session "No issue tracker configured for this repo; skipping the
+     pre-work gate." and stop here.
+   - Section missing: continue to step 2. If no key turns up anywhere, ask once whether this
+     repo tracks work in an issue tracker, and treat "no" as `none` for the rest of the session.
+     Offer to record the answer in `CLAUDE.md`.
+
+2. **Find the key.** Resolve the ticket pattern (the `Ticket pattern` row, else
+   `printenv CLAUDE_TICKET_PATTERN` in Claude Code, else `[A-Z][A-Z0-9]+-[0-9]+`; details in
+   `tracker-config.md`). Then look, stopping at the first match:
+   - the current branch (`git branch --show-current`);
    - the user's message;
-   - earlier context in this session.
+   - earlier in this session.
 
-2. **Fetch the item** from the tracker. Do not work from the key alone — a key
-   proves someone typed a string, not that an item exists behind it.
+3. **Fetch the item.** A key proves someone typed a string, not that an item exists. Fetch it
+   through the adapter the `Tracker` row names (`github-issues:issue-lifecycle-github`,
+   `jira-tracker:jira-issue-lifecycle`) or a connected tracker tool. If none is available, use
+   the pasted-issue path below.
 
-3. **Show what you found**, in one line, before doing anything else:
+4. **Print the summary** before doing anything else, using the template below.
 
-   ```
-   [PROJ-123] Async intake pipeline — Status: In Progress — Assignee: <name>
-   ```
-
-4. **Check the four properties.** Each failure blocks; see the table below.
+5. **Check the four properties.** Each failure gets the action in the table; nothing proceeds
+   until it is resolved or the user overrides it.
 
    | Property | Passing means | On failure |
    | --- | --- | --- |
-   | Exists | The tracker returns the item. | Stop. Ask which item this work attaches to. |
-   | Assigned | It has an assignee, and that assignee is whoever is doing the work. | Stop. Assign it, or confirm you are working on someone else's item deliberately. |
-   | Workable state | It is in a state that means work may start (see `status-vocabulary`). | Move it to the in-progress state first, with a comment. Never work silently against a backlog item. |
-   | Parented | It has a live parent, unless it is itself a top-level item (see `parent-child-hygiene`). | Set a parent before continuing. |
+   | Exists | The tracker returns the item. | Ask which item this work belongs to. |
+   | Assigned | It has an assignee, and that is whoever is doing the work. | Offer to assign it, or confirm the user means to work on someone else's item. |
+   | Workable | Its state is `ready` or `in-progress` (states: `tracker-discipline`). | Offer to move it to `in-progress` with a start comment; from `done`, `declined` or `parked`, ask first. |
+   | Parented | It has a live parent, or is itself top level. | Propose a parent using the `tracker-discipline` parenting rules. |
 
-5. **Validate scope.** Compare what the item describes with what was asked. If the
-   request falls outside the item's description, say so and offer the choice —
-   a new item, or an explicit widening of this one. Do not silently expand scope:
-   that is how one item's history ends up describing three changes.
+6. **Check scope.** Compare the item's description with the request. If the request falls
+   outside it, say so and offer a new item or an explicit widening of this one. Leave the
+   decision to the user, because one item quietly covering three changes loses its history.
 
-6. **No key found?** Ask. Do not invent one, do not proceed "just this once", and
-   do not attach the work to the nearest plausible item without confirmation.
+7. **No key found** (and a tracker exists): ask for it, or offer to search for an existing item
+   or create one under the `tracker-discipline` dedupe and parenting rules. Attach the work to a
+   plausible item only after the user confirms it.
 
-## Worked example
-
-> **User:** Add retry logic to the ingestion worker.
-
-The message carries no key, so check the branch:
+## Summary template
 
 ```
-$ git branch --show-current
-feature/PROJ-123-async-intake-pipeline
+[<KEY>] <title>
+State: <core state> (<tracker's name>) · Assignee: <name | unassigned> · Parent: <KEY | none | top-level> · Source: <tracker | pasted>
+Gate: <PASS | FAIL: <properties> | SKIPPED: no tracker | OVERRIDDEN: <user's reason>>
 ```
 
-`PROJ-123` matches the configured pattern. Fetch it:
+`Gate` takes exactly one of those four values. `FAIL` lists the failing properties, including
+`scope`.
+
+## Work from a pasted issue
+
+Use this when the tracker cannot be reached: no adapter installed, no connected tool, the tool
+call is denied, or a web or Cowork session without a tracker connector.
+
+1. Ask the user to paste the item's title, state, assignee, parent and description.
+2. Run steps 4 to 6 on that text, with `Source: pasted`.
+3. Any state move, assignment or comment the gate calls for: print it for the user to apply, and
+   say it is not recorded until they confirm.
+
+## Examples
+
+<example>
+User: "Add retry logic to the ingestion worker." Branch `feature/PROJ-123-async-intake-pipeline`.
 
 ```
-[PROJ-123] Async intake pipeline — Status: In Progress — Assignee: <name>
+[PROJ-123] Async intake pipeline
+State: in-progress (In Progress) · Assignee: dana · Parent: PROJ-100 · Source: tracker
+Gate: FAIL: scope
 ```
 
-Exists, assigned, workable, parented — but the scope check fails. Retry logic in
-the ingestion worker is not the async intake pipeline. Respond:
+Reply: "This branch is for PROJ-123 (async intake pipeline). Retry logic in the ingestion worker
+looks outside that scope. Open a separate item, or widen PROJ-123 to cover it?" Then wait for
+the answer.
+</example>
 
-> This branch is for PROJ-123 (async intake pipeline). Retry logic in the
-> ingestion worker looks outside that scope. Should I open a separate item for it,
-> or does it belong under PROJ-123 after all?
+<example>
+User: "Fix the typo in the signup error message." Branch `main`, no key in the message, and the
+`Tracker` row says `jira-tracker`.
 
-Then wait. The scope question is the point of the gate — answering it yourself is
-the failure this procedure exists to prevent.
+Reply: "Which issue does this belong to? I can search for an existing one on 'signup error
+message' or create one under the current UX bucket." If the user says "just fix it, no ticket",
+proceed and print `Gate: OVERRIDDEN: user chose to proceed without an item`.
+</example>
 
-## Why it blocks rather than warns
+<example>
+User: "Rename the helper in utils.py." The project `CLAUDE.md` has `| Tracker | none | … |`.
 
-A warning that work is untracked is read after the work exists, when the cost of
-correcting it is a retroactive item written from memory. A block is read before,
-when the correction is one question. The gate is only worth having in the
-blocking form.
+Say "No issue tracker configured for this repo; skipping the pre-work gate." once, then do the
+work. Later tasks in the same session skip the gate without repeating the line.
+</example>
+
+## Verify
+
+Before the first edit, check that:
+
+- the summary was printed and its `Gate` line holds one of the four values;
+- every failed property has either been resolved (and the item read back to confirm) or been
+  put to the user as a question;
+- for `PASS`, the item's state is now `in-progress` and a start comment exists (or, from pasted
+  data, both were printed for the user to apply).

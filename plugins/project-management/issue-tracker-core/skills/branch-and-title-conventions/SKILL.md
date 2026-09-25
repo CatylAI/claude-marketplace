@@ -1,29 +1,26 @@
 ---
 name: branch-and-title-conventions
+description: "Derives branch names, commit scopes and PR or MR titles from the issue key: <prefix>/<KEY>-<summary> and <type>(<KEY>): <description>. Use when creating a branch or opening a PR or MR. Not for commit types (use dev-standards:commit-standards); not for issue state (use tracker-discipline)."
+allowed-tools: Bash(git branch --show-current), Bash(printenv CLAUDE_TICKET_PATTERN)
 license: MIT
-description: How to derive a branch name, commit scope and pull request title from an issue key, and keep the key recoverable from the branch so every downstream artefact can be generated instead of remembered. Use when creating a branch or worktree, writing a pull request title, or recovering an issue key from an existing branch.
 ---
 
 # Branch and Title Conventions
 
-One rule underneath all of this: **the issue key must be recoverable from the
-branch name.** Everything downstream — commit scope, pull request title,
-changelog entry, release note, the tracker comment linking the two — is then a
-derivation rather than an act of memory.
+This skill owns the branch-name and PR/MR-title shape for every forge. The forge skills
+(`github-workflow:pr-lifecycle`, `gitlab-workflow:mr-lifecycle`) run the create commands and take
+the title and branch from here. `dev-standards:commit-standards` owns the `<type>` vocabulary,
+the scope charset and release impact.
 
-## The key shape is configurable
+The rule underneath: the issue key is recoverable from the branch name. The commit scope, the
+title, the changelog line and the tracker link are then derived rather than remembered.
 
-Do not hardcode one project's prefix. The key shape comes from
-`CLAUDE_TICKET_PATTERN`, the same variable the sibling `dev-guardrails` plugin
-reads, so branch parsing and commit-scope suggestion agree:
+## The key
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `CLAUDE_TICKET_PATTERN` | `[A-Z][A-Z0-9]+-[0-9]+` | Matches `PROJ-123`, `A1-7`, `PLATFORM2-4501`. |
-
-Trackers that number issues plainly can set `[0-9]+`; trackers with an
-underscore form can set `ISSUE_[0-9]+`. Everything below says "the key" and means
-whatever that pattern matches.
+The key is whatever the ticket pattern matches. The pattern comes from the `Ticket pattern`
+row of the project's `## Issue tracker` section, else `printenv CLAUDE_TICKET_PATTERN` in Claude
+Code, else `[A-Z][A-Z0-9]+-[0-9]+`. The `tracker-discipline` skill's
+`references/tracker-config.md` explains the order and how to set each.
 
 ## Branch names
 
@@ -31,16 +28,11 @@ whatever that pattern matches.
 <prefix>/<KEY>-<short-summary>
 ```
 
-| Prefix | Use for |
-| --- | --- |
-| `feature` | New capability. |
-| `fix` | Defect repair. |
-| `refactor` | Behaviour-preserving restructuring. |
-| `chore` | Dependencies, tooling, housekeeping. |
-| `docs` | Documentation-only change. |
-
-`<short-summary>` is two to five kebab-case words — enough to recognise the branch
-in a list, not a restatement of the issue title.
+- `<prefix>` is the commit type of the main change, with `feat` spelled `feature`: `feature`,
+  `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci` or `chore`.
+- `<short-summary>` is two to five lowercase kebab-case words: enough to recognise the branch in
+  a list, not the issue title.
+- With no tracker (the `Tracker` row is `none`), drop the key: `<prefix>/<short-summary>`.
 
 ```
 feature/PROJ-123-add-auth-middleware
@@ -48,21 +40,19 @@ fix/PROJ-456-null-deref-on-empty-payload
 refactor/PROJ-789-simplify-payment-flow
 ```
 
-Worktrees follow the branch: `.worktrees/<branch-name>/`, unless the repo sets its
-own location.
+Claude Code's built-in worktrees choose their own directory and branch name. Before the first
+push from one, rename its branch to this shape with `git branch -m <prefix>/<KEY>-<summary>`.
 
-## Pull request titles
-
-The key is mandatory in the title. It is what lets a reader of the merge history,
-or an automated changelog, find the intent behind a change.
+## PR and MR titles
 
 ```
 <type>(<KEY>): <description>
 ```
 
-The `<type>` vocabulary and its semver meaning come from the `commit-standards`
-skill in `dev-standards` — this skill only adds the rule that the scope is the
-issue key when one exists.
+`<type>` and the description rules (imperative, lowercase first word, no trailing period, header
+under about 72 characters) come from `dev-standards:commit-standards`. This skill adds one rule:
+when the work has a key, the scope is the key. A squash merge that takes the PR title as its
+commit header then needs no editing.
 
 ```
 feat(PROJ-123): add org hierarchy endpoint
@@ -70,30 +60,49 @@ fix(PROJ-456): route gateway traffic through the stable alias
 chore(PROJ-789): bump runtime dependencies
 ```
 
+A forge's closing reference goes in the body, not the title; for example GitHub closes an issue
+from `Fixes #123` in the PR body. The adapter (`github-issues`, `jira-tracker`) says which form
+its tracker needs.
+
 ## When the branch has no key
 
-It happens: a branch created in a hurry, or one inherited from elsewhere.
+| Situation | Title | Branch |
+| --- | --- | --- |
+| Tracker configured, key known from the message or session | `<type>(<KEY>): …` | Rename if unpushed and nobody else has it; otherwise leave it and name the key in the PR body |
+| Tracker configured, no key known | Ask for the key first (the `pre-work-gate` question) | As above, once the key is known |
+| User chose to proceed without an item, or `Tracker` is `none` | `<type>(<component>): …` or `<type>: …`, per `dev-standards:commit-standards` | `<prefix>/<short-summary>` |
 
-1. Ask for the issue key. Do not open the pull request without one.
-2. Once you have it, either rename the branch (if nothing has been pushed and no
-   one else has it checked out) or put the key in the title and reference it in
-   the pull request body.
-3. Renaming a shared branch is worse than a mismatched name. Prefer the title fix.
+Use a key only when the tracker or the user supplied it; a made-up key points every later search
+at the wrong item. Prefer the title fix over renaming a shared branch, because a rename breaks
+everyone else's checkout.
 
-Never omit the key on the grounds that "the description explains it". A key is
-queryable; prose is not.
+## Examples
 
-## Deriving, not remembering
+<example>
+Branch `fix/PROJ-456-null-deref-on-empty-payload`; the change guards a null payload.
+Title: `fix(PROJ-456): handle empty payload in intake parser`
+</example>
 
-Given `feature/PROJ-123-add-auth-middleware`, everything else follows:
+<example>
+Branch `dana-wip`, already pushed and shared; the user says the work is PROJ-212, a new export
+option.
+Title: `feat(PROJ-212): add csv export option`. Keep the branch name and write "Tracks PROJ-212"
+in the PR body.
+</example>
 
-| Artefact | Derived value |
-| --- | --- |
-| Commit scope | `PROJ-123` |
-| Pull request title | `feat(PROJ-123): <description>` |
-| Tracker comment | Links the pull request to `PROJ-123` |
-| Search for this work later | One query on the key |
+<example>
+`Tracker` is `none`; the change bumps a linter.
+Branch `chore/bump-linter`, title `chore(lint): bump eslint config`.
+</example>
 
-That last row is the payoff. A year on, "why is this code here" is answered by
-grepping one key across the history and the tracker — provided the key was put
-in both.
+## Verify
+
+Before creating the branch or opening the PR or MR:
+
+- the branch matches `^(feature|fix|perf|refactor|docs|test|build|ci|chore)/` followed by the
+  key (when there is one) and a kebab-case summary;
+- the title's scope equals the key the pattern extracts from the branch, or the key the user
+  supplied;
+- the title passes the header check in `dev-standards:commit-standards`.
+
+Without a checkout, check a pasted branch name and title the same way.

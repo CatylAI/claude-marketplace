@@ -29,11 +29,14 @@ If the repository has a template (`.github/pull_request_template.md` or
 it was verified. Write it to a file and pass `--body-file`, which avoids quoting trouble:
 
 ```bash
-gh pr create --base <default-branch> --title "<issue key>: <what changed>" --body-file <path>
+gh pr create --base <default-branch> --title "<type>(<KEY>): <description>" --body-file <path>
 ```
 
-If the branch name starts with an issue key (`PROJ-123-...`), put that key at the start of the
-title. Otherwise write a plain title and do not make up a key. Add `--draft` when the work is
+Take the title shape from `issue-tracker-core:branch-and-title-conventions` when it is installed:
+`<type>(<KEY>): <description>`, with the key taken from a `<prefix>/<KEY>-<summary>` branch. With no
+key, write `<type>(<component>): <description>` or `<type>: <description>` per
+`dev-standards:commit-standards`. Use a key only when the tracker or the user supplied it. For a
+GitHub issue, put `Fixes #<n>` in the body so the merge closes it. Add `--draft` when the work is
 incomplete; `gh pr ready` flips it later.
 
 ## Read state

@@ -1,130 +1,153 @@
 ---
 name: dd-prod-triage
-description: "Sweep a window of Datadog production errors into a ranked, deduplicated proposal set. Aggregate before reading, rank by blast radius and novelty rather than raw count, collapse issues that share one fault, and hand back proposals. Use for 'what is broken in this Datadog org', a scheduled error review, or a post-incident sweep. The Datadog execution of observability-core's production-triage skill."
+description: "Sweeps Datadog Error Tracking issues and error logs into core's ranked, deduplicated proposal set. Use for 'what is broken in this Datadog org', a scheduled Datadog error review or a post-incident sweep. Not for vendor-neutral triage rules (use observability-core:production-triage)."
 license: MIT
 ---
 
 # Datadog production triage
 
-`observability-core`'s `production-triage` states the discipline: **aggregate
-before you read, rank by blast radius and novelty, and only then decide what
-becomes tracked work.** This is that procedure against Datadog.
+This skill runs `observability-core:production-triage` against Datadog. Core owns the phases,
+the silence check, the merge patterns, the noise floor, the rank order, the tracker dedupe
+(`NEW`, `DUPLICATE → <item>`, `UNCHECKED`), the ranked table, the proposal template, the
+approval gate and the outcome table. This skill supplies the Datadog queries, field mappings and
+the tells that only Datadog data gives you. Follow core's formats exactly.
 
-It produces a **proposal set** and stops. Filing is a tracker adapter's job — see
-"The handoff" below, and read it before wiring this to anything.
+## Before you start
 
-## Phase 1 — aggregate. Do not read events yet.
+1. Read the project's `## Observability capabilities` section; the Datadog rows are in the
+   `datadog-monitors-and-queries` skill's `references/setup.md`.
+2. Transport: the Datadog MCP tools, with the `error-tracking` toolset enabled (it is not in
+   the default `core` toolset; `/ddtoolsets` in Datadog's plugin, or `toolsets=core,error-tracking`
+   on the endpoint). Otherwise REST from `references/rest-api.md` in the same skill.
+3. Confirm the production tag returns data on each surface you will query (issues, logs,
+   metrics), per core's inputs step and `datadog-monitors-and-queries` ("`env` versus `@env`").
 
-Error Tracking has already done the clustering. Start from issues, not from logs:
+Without Datadog access, ask for an Error Tracking issue list export (issue, service, total
+count, impacted users, first seen, last seen, first-seen version) or error-log counts grouped by
+error type, and run core's phases on that. Label every number "pasted".
+
+## Phase 1: Aggregate from Error Tracking
+
+Error Tracking has already clustered stack traces into issues. Start there:
+
+- MCP: `search_datadog_error_tracking_issues` for the scope and window.
+- REST: "Error Tracking: search issues" (`data.type: "search_request"`, times in ms,
+  `order_by`, `include=issue`). At most 100 issues per request; narrow by service if you hit it.
+
+Map the result onto core's columns:
+
+| Core column | Datadog field | Note |
+|---|---|---|
+| Service | `service` on the issue | |
+| Signature | `error_type` + `function_name` or `file_path`; `error_message` when those are empty | |
+| Count | `total_count` (result) | For the queried window, not all time. |
+| Users | `impacted_users` (result) | 0 means `?` unless you confirmed the service attaches a user ID. |
+| First seen | `first_seen` (issue, ms epoch) | Convert to UTC. |
+| Trend | compare `total_count` for the two halves of the window, or `analyze_datadog_error_tracking_errors` bucketed by hour | `new` when first seen falls inside the window. |
+| Source | `aggregator` | |
+
+Services that do not report into Error Tracking: count error logs grouped by your error facet
+(`analyze_datadog_logs`, or REST "Logs: aggregate", whose count sort needs `"type": "measure"`).
+Record their source as `logs`, because a hand-grouped cluster is a weaker claim than an issue.
+Name any service with neither as a gap.
+
+Silence check (core Phase 1): per service, compare this window's request count with the same
+window a week earlier:
 
 ```
-POST https://api.<SITE>/api/v2/error-tracking/issues/search
-{ "data": { "attributes": {
-    "from": <unix_ms>, "to": <unix_ms>,
-    "query": "service:<SERVICE> env:<ENV>",
-    "track": "trace" } } }
+sum:trace.<OPERATION>.hits{env:<ENV>} by {service}.as_count().rollup(sum, 3600)
 ```
 
-Each issue carries what you triage on: **total count, affected-user count,
-first-seen, last-seen, state, and a representative stack trace.** The
-representative is usually enough — it is what lets you skip reading raw events
-for most issues entirely.
+## Phase 2: Merge, floor, rank
 
-For a service that does not report into Error Tracking, fall back to a log
-aggregation grouped by `@error.type` or `@error.stack` — the `analytics/aggregate`
-call in `datadog-monitors-and-queries`. **Record in your output which issues came
-from Error Tracking and which from a log grouping**, because a hand-grouped
-cluster is a weaker claim than a clustered issue and a reader needs to know which
-they are looking at.
+Apply core's merge patterns, noise floor and rank order. Datadog-specific tells:
 
-**The mistake this phase prevents:** opening the log explorer and reading errors
-newest-first. That surfaces the loudest recent thing, which correlates with
-neither impact nor novelty, and it burns the window you had.
+- **Novelty against a change:** `first_seen_version` names the deploy that introduced an issue.
+  An issue whose first-seen version is the current release, first seen minutes after it, is the
+  strongest novelty signal core ranks on.
+- **Same fault, several services:** Error Tracking groups within a service. Issues in a caller
+  and a callee with first seen in the same minute are candidates to merge; check the users
+  overlap with a log cardinality query before merging.
+- **Retry loops:** `total_count` far above `impacted_users` (when users are measured) is one
+  client looping; rank it on users, not count.
 
-## Phase 2 — rank. Raw count is the weakest signal you have.
+## Phase 3: Dedupe against the tracker
 
-`observability-core` says impact sets severity. Applied to a sweep:
+Core's Phase 3, with one Datadog step first: an issue may already link a ticket or case. Read it
+with `get_datadog_error_tracking_issue`, or REST search with `include=issue,issue.case`. A linked
+open ticket makes the cluster `DUPLICATE → <that item>`; still search the tracker, since other
+items can cover the same symptom in different words. A tracker you cannot search makes it
+`UNCHECKED`.
 
-| Rank by | Why it beats count |
-|---|---|
-| **Affected users** | 40,000 errors from one retry loop on one tenant is one bad tenant. 400 errors across 400 users is an outage. |
-| **Novelty** | A brand-new issue with 40 events usually outranks a known issue with 4,000. The known one has been surviving; the new one is a change that just landed. |
-| **First-seen against deploys** | An issue whose `first_seen` sits just after a `version` change has a named suspect. |
-| **Trajectory** | Rising beats flat at the same count. Flat-and-large is debt; rising-and-small is an incident forming. |
-| **Silence** | A service that *stopped* erroring because it stopped serving produces no issue at all. Check request-rate alongside; see below. |
+## Phase 4: Propose
 
-**Raw count ranks last**, and a sweep that sorts by it will spend its attention
-on a noisy logger.
+Use core's ranked table and proposal template unchanged. Datadog values: Source `aggregator` for
+Error Tracking issues and `logs` for hand-grouped log counts; the Query line holds the issue
+search query or the log aggregation; Samples is the issue's representative stack trace trimmed
+to application frames; add the Datadog issue link from the UI.
 
-### The absent signal
+## Phase 5: File, and Datadog issue states
 
-Nothing in an error sweep will show you a service that went quiet. Before
-reporting a window as triaged, look at request rate across the services in scope
-— a service at zero traffic is the most serious thing a sweep can find, and it is
-invisible to every query above.
+Filing goes through core's Phase 5 with whatever tracker tool the session has.
 
-## Phase 3 — deduplicate
+Changing an issue in Datadog is a separate write that needs its own explicit approval.
+`IssueState` is `OPEN`, `ACKNOWLEDGED`, `RESOLVED`, `IGNORED` or `EXCLUDED`
+(`update_datadog_error_tracking_issue`, or REST "State and assignee"). A resolved issue that
+recurs reopens, which is fine. `IGNORED` and `EXCLUDED` take an issue out of exactly the sweep
+that would catch it growing, so propose them only with a written reason and a revisit date, and
+record both in the outcome table's Reason column. "Noisy" is not a reason; "known third-party
+timeout tracked in <item>, revisit after their fix ships" is. Linking the filed ticket back to
+the issue (`manage_datadog_error_tracking_issue_links`) is also a write; offer it, do not assume
+it.
 
-Distinct issues are routinely one fault:
+If a cluster reflects confirmed live impact, pause and declare with
+`datadog-incident-response`, per core.
 
-- **Same root, different frames.** One failure surfacing through three call
-  paths. The bottom of the stack matches; the top does not.
-- **Same fault, different services.** A dependency failing produces an issue in
-  every caller. The timeline is the tell: they start within seconds.
-- **Wrapped exceptions.** The same cause re-raised with a different type at each
-  boundary.
-- **A retry loop.** One logical failure, N logged errors. Count per *user* rather
-  than per event and it collapses.
+## Examples
 
-Merge into one proposal naming the surfaces, rather than filing N items someone
-later closes as duplicates. Where you are unsure, keep them separate and say why
-— a wrong merge hides a real second fault.
+<example>
+Situation: issue A in checkout-api has `total_count` 4,200 and `impacted_users` 0; the service's
+error logs carry no `@usr.id`.
 
-## Phase 4 — the proposal set
+Users is `?`, not 0. Rank A on the other keys and say so in the table. Add "checkout-api
+attaches no user context to errors" to the known gaps, since every Users value for that service
+will be `?` until it is fixed.
+</example>
 
-One entry per surviving cluster. Each **must** carry:
+<example>
+Situation: issue B (`ReadTimeout` in checkout-api) and issue C (`ConnectionResetError` in
+payment-svc) were both first seen at 13:02 UTC; C's `first_seen_version` is payment-svc's
+release deployed at 12:58.
 
-- a link to the Error Tracking issue or the saved log query
-- first-seen and last-seen, and whether it is rising, flat or decaying
-- total count **and** affected-user count, stated separately
-- the deploy or config change it correlates with, or explicitly *none found*
-- which services it surfaces in
-- the representative stack trace, or a short quotation from it
-- **whether it came from Error Tracking or a hand-grouped log query**
+Check the user overlap (log cardinality on the shared user ID for both services): 93 of 100 in
+common. Merge into one cluster, record the merge, and put the 12:58 payment-svc release in the
+proposal's Change correlation line. Breadth is two services, so ownership sits with payment-svc.
+</example>
 
-And, per `observability-core`, **what you could not determine.** An issue with no
-affected-user count because the service does not report user context is a known
-unknown; reporting it as zero users is a wrong answer that looks complete.
+<example>
+Situation: the issue search returns nothing for export-worker, but its error-log count by
+`@error.kind` shows 310 `S3UploadError` in the window.
 
-## Phase 5 — muting and resolving need a written reason
+export-worker does not report into Error Tracking. Cluster from the log grouping, set Source to
+`logs`, and list "export-worker not in Error Tracking" under known gaps rather than treating the
+empty issue search as clean.
+</example>
 
-`PUT /api/v2/error-tracking/issues/<id>/assignee`, and the state transitions to
-`RESOLVED` or `IGNORED`, are real mutations. Neither belongs in an unattended
-sweep.
+## When something is unavailable
 
-Resolving an issue that recurs re-opens it, which is fine. **Muting is the
-dangerous one** — a muted issue stops appearing in exactly the sweep that would
-have caught it growing. Mute only with a stated reason and a date to revisit, and
-record both in the proposal set so the decision is auditable. "It was noisy" is
-not a reason; "it is a known third-party timeout tracked in <item>, revisit after
-their fix ships" is.
+- **`error-tracking` toolset missing and no REST keys:** use `analyze_datadog_logs` for the
+  whole sweep with Source `logs`, and say Error Tracking was not reachable.
+- **More than 100 issues:** split the search by service or narrow the window; say which splits
+  you ran so the counts are reproducible.
+- Everything else (no tracker, nothing approved, create failures, zero clusters) follows core's
+  "When something is unavailable".
 
-## The handoff
+## Verify
 
-This skill stops at proposals **deliberately**. Filing into a tracker requires
-knowing a project, a work-item type and a field layout — all of which belong to a
-tracker adapter and none of which belong here. The employer implementation this
-was generalised from filed straight into one hardcoded tracker instance, which is
-precisely the coupling this marketplace is organised to avoid: it made an
-observability tool unusable for anyone with a different tracker.
+Run core's Verify list, plus:
 
-Pair with `jira-tracker` or `github-issues`. Each proposal above carries what
-either needs; the tracker adapter owns the create call.
-
-## Not this skill's job
-
-- **Deciding whether to declare an incident.** That is `observability-core`'s
-  `incident-declaration`, and a triage sweep that finds a live outage should stop
-  and declare rather than finish the sweep.
-- **The postmortem.** `incident-postmortem` in `ops-workflows`.
-- **Fixing anything.** A sweep that starts editing code has stopped being a sweep.
+- Every Users value of 0 from Error Tracking was either confirmed (the service attaches user IDs)
+  or reported as `?`.
+- Every Source is `aggregator` or `logs`, and every count traces to a printed issue search or log
+  aggregation with its window.
+- No Datadog issue state was changed without an approval and a recorded reason.
