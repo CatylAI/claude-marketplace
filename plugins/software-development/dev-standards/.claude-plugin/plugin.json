@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "dev-standards",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions.",
   "author": {
     "name": "CatylAI",

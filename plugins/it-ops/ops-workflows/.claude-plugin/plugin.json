@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "ops-workflows",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "IT and SRE workflows: on-call runbooks built from repo evidence, and blameless incident postmortems with owned, dated action items.",
   "author": {
     "name": "CatylAI",

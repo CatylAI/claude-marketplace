@@ -16,7 +16,7 @@ labels and issue types, milestones, sub-issues, blocked-by links and Projects v2
 
 `issue-tracker-core` is declared as a dependency, so it comes with it.
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 ## Skills
@@ -39,7 +39,7 @@ Each skill uses the first of these that works:
    on an older `gh` the skills fall back to the REST endpoints through `gh api`.
 2. **GitHub MCP tools**, from the GitHub MCP server or the claude.ai GitHub connector (`issue_read`,
    `issue_write`, `sub_issue_write`, `add_issue_comment`, `search_issues`, `list_issues`,
-   `list_issue_types`). This is the path on the web and in Cowork. Label and Projects tools are in
+   `list_issue_types`). This is the path in Cowork and claude.ai. Label and Projects tools are in
    the server's non-default `labels` and `projects` toolsets; milestones and blocked-by links have
    no MCP tool, so those steps print a `gh` command instead.
 3. **Pasted data.** With neither, the skills work from issue text or an export you paste, and print

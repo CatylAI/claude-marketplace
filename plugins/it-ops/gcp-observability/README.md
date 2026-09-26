@@ -127,15 +127,16 @@ Error Reporting list, log entries) and label every number `pasted`.
 - **Claude Code on the web** runs in a cloud container with a shell. What it usually lacks is
   `gcloud` credentials and network access to `*.googleapis.com`; both are environment settings.
   Without them, use Google's MCP servers if connected, or pasted data.
-- **Cowork:** the three skills load and work through connected MCP servers or pasted data.
+- **Cowork and the claude.ai apps:** the three skills load and work through connectors or
+  pasted data.
 - **`gcp-investigator` is Claude Code only**, as plugin agents are. The plugin still uses an
   agent here because an investigation can take dozens of queries whose raw
   output would otherwise fill the main session's context. On other surfaces, use the skills
   directly.
 
-The agent inherits the session's tools except Write, Edit and NotebookEdit, so that it can use
-whatever Google Cloud MCP server you connected. It stays read-only by instruction; for a
-guarantee, add deny rules for `gcloud` write verbs in your permission settings, and allow rules
+The agent's tool list is Bash, Read, Grep and the five Google Cloud MCP server names in the
+table above; Write, Edit and NotebookEdit are disallowed. A server added under another name is
+invisible to it. It stays read-only by instruction; for a guarantee, add deny rules for `gcloud` write verbs in your permission settings, and allow rules
 such as `Bash(gcloud logging read *)` to avoid prompts.
 
 ## Layout

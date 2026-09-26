@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "dev-mcp-servers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standard MCP servers for development work, starting with Playwright for driving a real browser. Claude Code only.",
   "author": {
     "name": "CatylAI",

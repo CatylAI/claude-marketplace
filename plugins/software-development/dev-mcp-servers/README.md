@@ -5,8 +5,21 @@ team defaults. Install this plugin once and every server listed here starts when
 starts.
 
 **Claude Code only.** These are local (stdio) servers. Cowork and claude.ai cannot start local
-processes, so the servers do not run there. The `browser-check` skill still loads on the web and
+processes, so the servers do not run there. The `browser-check` skill still loads there and
 falls back to working from pasted console output or screenshots.
+
+## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
+
+```
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install dev-mcp-servers@catylai
+```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin. Only the skills load
+there; the MCP servers do not start.
 
 ## Servers
 

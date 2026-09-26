@@ -1,6 +1,6 @@
 {
   "name": "terraform-aws",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC trust for GitHub and GitLab CI, and the judgement half of a Terraform plan review.",
   "author": {
     "name": "CatylAI",

@@ -8,6 +8,19 @@ plugin is the other kind: hooks that inspect what Claude is about to do and retu
 decision, so the unsafe command never reaches the shell and the credential never reaches
 the disk.
 
+## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
+
+```
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install dev-guardrails@catylai
+```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin. Only the skills load
+there; the hooks do not run (see Surfaces).
+
 ## The two halves
 
 **Blocking** is the `PreToolUse` half, and it blocks only what is unrecoverable: a printed
@@ -168,7 +181,7 @@ The `security-scan` skill loads on both surfaces. It shells out to `bandit`, `gi
 every scanner as skipped.
 
 The `session-sync` skill is **Claude Code only**. It reads worktree state from disk and runs `git`,
-so on the web there is nothing for it to work on.
+so in Cowork and claude.ai there is nothing for it to work on.
 
 ## Configuration
 
@@ -269,12 +282,6 @@ Treat these hooks as the fast, in-the-moment layer that catches the common mista
 explains the fix, sitting **underneath** permission rules and the sandbox — not as a
 replacement for them.
 
-The plugin-cache gate in `pre-write-edit` takes the same family of marker, in the only
-place a `Write` or `Edit` has to put one: `# claude-allow-plugin-cache` on a line of its
-own in the content being written. A line that merely *mentions* the marker — this
-paragraph, for instance — is not a waiver, because the cached copy of this README is
-itself a file the gate protects.
-
 ## Layout
 
 ```
@@ -331,7 +338,8 @@ cd hooks && npm test      # node:test, no dependencies needed
 npx tsc --noEmit -p plugins/software-development/dev-guardrails/hooks/tsconfig.json
 ```
 
-A `.test.ts` sits beside each hook. Three suites are named for the invariant they protect
+A `.test.ts` sits beside each hook and module except `post-compact.ts` and
+`user-prompt-submit.ts`, which have no tests yet. Three suites are named for the invariant they protect
 rather than for a source file, because that invariant is the reason the file is shaped the
 way it is:
 

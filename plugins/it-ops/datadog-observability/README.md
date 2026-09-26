@@ -12,9 +12,9 @@ is chosen or how a sweep is ranked; this layer answers how to get each number ou
 
 | Name | Type | Use it when | Surfaces |
 |---|---|---|---|
-| `datadog-incident-response` | Skill | A Datadog-monitored service looks broken: confirm impact in three queries, fill core's blast-radius block from Datadog, check what changed, declare and maintain the Datadog incident. | Claude Code, web, Cowork |
-| `datadog-monitors-and-queries` | Skill | You need a Datadog query that means what it claims, or a Datadog number looks wrong. Owns rollup, `.as_count()`, denominators, the `env` versus `@env` trap, exclusion filters and `notify_no_data`. Read-only. | Claude Code, web, Cowork |
-| `dd-prod-triage` | Skill | Sweeping Datadog Error Tracking and error logs into core's ranked proposal set. | Claude Code, web, Cowork |
+| `datadog-incident-response` | Skill | A Datadog-monitored service looks broken: confirm impact in three queries, fill core's blast-radius block from Datadog, check what changed, declare and maintain the Datadog incident. | Claude Code, Cowork, claude.ai |
+| `datadog-monitors-and-queries` | Skill | You need a Datadog query that means what it claims, or a Datadog number looks wrong. Owns rollup, `.as_count()`, denominators, the `env` versus `@env` trap, exclusion filters and `notify_no_data`. Read-only. | Claude Code, Cowork, claude.ai |
+| `dd-prod-triage` | Skill | Sweeping Datadog Error Tracking and error logs into core's ranked proposal set. | Claude Code, Cowork, claude.ai |
 | `dd-investigator` | Subagent | One bounded question answered read-only, without the main session holding the query output. | Claude Code only |
 
 Reference files the skills load on demand:
@@ -28,12 +28,18 @@ Reference files the skills load on demand:
 
 ## Install
 
+**Claude Code** (terminal, desktop app, VS Code):
+
 ```
 /plugin marketplace add CatylAI/claude-marketplace
 /plugin install datadog-observability@catylai
 ```
 
 `observability-core` is installed with it as a dependency.
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin. Only the skills load there;
+`dd-investigator` does not run (see Surfaces).
 
 ## Connect Datadog
 

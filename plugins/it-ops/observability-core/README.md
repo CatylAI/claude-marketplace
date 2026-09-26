@@ -17,7 +17,7 @@ files you grep.
 /plugin install observability-core@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 ## Skills
@@ -53,7 +53,7 @@ servers.
 
 - **Claude Code** with telemetry access (a CLI, an MCP server, or API credentials in the
   environment) runs the queries itself and reads `CLAUDE.md` from the checkout.
-- **Without telemetry access or a checkout** (including the web), the skills work from what you
+- **Without telemetry access or a checkout** (for example in Cowork or claude.ai), the skills work from what you
   paste: grouped error exports, metric values, counts, and your capability answers. Declaration
   goes ahead without numbers, and every number is labelled with its source.
 

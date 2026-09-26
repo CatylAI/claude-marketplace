@@ -43,9 +43,10 @@ belong in a gitignored `CLAUDE.local.md`, which `project-new` adds to `.gitignor
 
 ## Surfaces
 
-The skills load in Claude Code and Cowork (web). `project-new` needs a shell and is Claude Code
-only; on the web it drafts the files for you to create. `adr-init` and the POC skills work from
-pasted content on the web and hand back file contents to save. `adr-currency-validator` is a
+The skills load in Claude Code (including Claude Code on the web) and in Cowork and the
+claude.ai apps. `project-new` needs a shell and is Claude Code only; in Cowork and claude.ai it
+drafts the files for you to create. `adr-init` and the POC skills work from pasted content there
+and hand back file contents to save. `adr-currency-validator` is a
 subagent and runs in Claude Code only.
 
 ## What this plugin does not do
@@ -63,6 +64,12 @@ that belongs to `github-workflow` or `gitlab-workflow`. It never dictates a POC'
 
 ## Install
 
+**Claude Code** (terminal, desktop app, VS Code):
+
 ```
-/plugin install project-scaffold@<your-marketplace>
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install project-scaffold@catylai
 ```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.

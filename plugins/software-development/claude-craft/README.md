@@ -68,14 +68,13 @@ conventions, not as part of the API.
 
 ## Surfaces
 
-Skills load in both Claude Code and Cowork (Claude Code on the web). The `agent-sdk-validator`
-subagent is Claude Code only.
+Skills load in Claude Code (including Claude Code on the web) and in Cowork and the claude.ai
+apps. The `agent-sdk-validator` subagent is Claude Code only.
 
 Design skills need no checkout; their Verify steps run commands in Claude Code and fall back to
 pasted content in Cowork. The audit skills read a repository from disk in Claude Code; in Cowork
-there is no checkout and no shell, so they work from configuration you paste into the
-conversation instead. The `scripts/hooks/`
-checks need a shell and do not run there.
+and claude.ai there is no checkout and no shell, so they work from configuration you paste into
+the conversation instead. The `scripts/hooks/` checks need a shell and do not run there.
 
 ## Moved
 
@@ -92,10 +91,19 @@ related skills:
 | `claude-config-audit` | merged into `config-audit` (use `--fix`) |
 | `scripts/eval/` | removed; use the skill-creator skill's evals, or `claude plugin eval` |
 
-## Installing
+## Install
 
-Install from the marketplace, then invoke a skill by name or let Claude select one from its
-description.
+**Claude Code** (terminal, desktop app, VS Code):
+
+```
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install claude-craft@catylai
+```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.
+
+Then invoke a skill by name, or let Claude select one from its description.
 
 ## Scope
 

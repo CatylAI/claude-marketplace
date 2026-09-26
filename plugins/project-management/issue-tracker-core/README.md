@@ -16,7 +16,7 @@ adapters supply those and map onto the vocabulary defined here.
 /plugin install issue-tracker-core@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 Install an adapter alongside it for the actual tracker calls: `github-issues` or `jira-tracker`.
@@ -74,7 +74,7 @@ servers.
 
 - **Claude Code** reads the branch with `git`, the pattern from `CLAUDE.md` or
   `CLAUDE_TICKET_PATTERN`, and the item through an adapter or a connected tracker tool.
-- **Without a checkout or tracker access** (including the web), the skills ask for the
+- **Without a checkout or tracker access** (for example in Cowork or claude.ai), the skills ask for the
   `## Issue tracker` rows and a pasted issue, run the same checks on that text, and print any
   state move, parent link or comment for you to apply.
 

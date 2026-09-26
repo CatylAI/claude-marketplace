@@ -8,6 +8,18 @@ description sits in context in every session.
 
 Nothing here assumes a particular CI system, git host, issue tracker or cloud provider.
 
+## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
+
+```
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install dev-standards@catylai
+```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.
+
 ## Skills
 
 ### Writing and reviewing code
@@ -62,7 +74,8 @@ A review finding has three independent properties: severity, scope (`in_diff`) a
 
 ## Surfaces
 
-All skills load in Claude Code and Cowork. The ones that read a repository work from pasted
+All skills load in Claude Code (including Claude Code on the web) and in Cowork and the
+claude.ai apps. The ones that read a repository work from pasted
 files when there is no checkout.
 
 ## License

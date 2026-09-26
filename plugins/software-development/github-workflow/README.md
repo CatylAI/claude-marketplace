@@ -47,7 +47,7 @@ server's tools when it is connected. The skills list the tool for each step.
 /plugin install github-workflow@catylai
 ```
 
-**Cowork / web:** enable the plugin for your claude.ai account. The skills load there; the script
+**Cowork and claude.ai:** enable the plugin for your claude.ai account. The skills load there; the script
 does not run without a shell.
 
 ## Layout

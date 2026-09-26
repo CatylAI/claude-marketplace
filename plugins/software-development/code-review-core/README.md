@@ -7,6 +7,19 @@ The whole pipeline runs on a plain `git diff`. It makes no API call to any code-
 issue tracker, or chat service, and it posts nothing anywhere. Transport is a separate concern and
 belongs in a separate plugin.
 
+## Install
+
+**Claude Code** (terminal, desktop app, VS Code):
+
+```
+/plugin marketplace add CatylAI/claude-marketplace
+/plugin install code-review-core@catylai
+```
+
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin. Only the skills load
+there, and the pipeline does not run (see Surfaces).
+
 ## When to use it
 
 - Reviewing a branch against its merge base, locally or in CI, with no credentials of any kind.
@@ -62,7 +75,8 @@ on its own.
 
 ```
 1. DETECT    pipeline/review-scan.sh
-             11 linters and scanners, plus dependency pinning, commented-out code, changed-symbol impact
+             11 linters and scanners, plus dependency pinning, commented-out code,
+             IaC policy rules, changed-symbol impact
              -> SCAN.json, SCAN-SUMMARY.md          (no tokens; reports, never enforces)
 
 2. BOUND     pipeline/prepare-context.sh
@@ -182,7 +196,8 @@ detector actually produced output, because a `--detectors python` scan with the 
 nothing in its place would be a silent loss of coverage. The suppression is counted and printed in
 `SCAN-SUMMARY.md` like every other.
 
-Seven detectors cover 11 external tools, plus `git grep` and two built-in checks. Every tool that
+Eight detectors: four cover 11 external tools, `impact` uses `git grep`, and three (`deps`,
+`comments`, `iac-policy`) are built-in checks. Every tool that
 could not run is recorded as an explicit skip in `SCAN-SUMMARY.md` rather than silently left out:
 a missing binary, an unparseable output, or a diff with none of that detector's file types. A scan
 with half its tools missing looks exactly like a clean scan unless the gaps are stated, so they

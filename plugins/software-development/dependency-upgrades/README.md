@@ -88,8 +88,8 @@ of `*`, so it never shows up in `git status` or in a commit. Delete it when the 
 /plugin install dependency-upgrades@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
-claude.ai account and Claude Code loads it automatically as a synced plugin.
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.
 
 ## Surfaces
 

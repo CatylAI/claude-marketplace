@@ -3,7 +3,8 @@
 IT and SRE workflows: on-call runbooks built from repo evidence, and blameless incident
 postmortems with owned, dated action items.
 
-Works in **Claude Code** and in **Cowork** (Claude Code on the web).
+Works in **Claude Code** (including Claude Code on the web) and in **Cowork and the claude.ai
+apps**.
 
 ## Install
 
@@ -14,7 +15,7 @@ Works in **Claude Code** and in **Cowork** (Claude Code on the web).
 /plugin install ops-workflows@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 ## Skills

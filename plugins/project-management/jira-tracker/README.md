@@ -19,7 +19,7 @@ REST API v3 in Claude Code, and works from a pasted issue when neither is availa
 
 In Claude Code, `issue-tracker-core` is a declared dependency and installs with it.
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 ## Connect Jira
@@ -82,10 +82,10 @@ References shipped with `jira-issue-lifecycle`:
 All three skills load in Claude Code and in Cowork. The plugin ships no agents, hooks or MCP
 server.
 
-| Access | Claude Code | Web / Cowork |
+| Access | Claude Code (including on the web) | Cowork and claude.ai |
 | --- | --- | --- |
 | Atlassian connector or MCP server | Yes | Yes (connector) |
-| REST with an API token | Yes | No shell |
+| REST with an API token | Yes; on the web, only once the environment has the token and network access to your Jira site | No shell |
 | Pasted issue | Yes | Yes |
 
 ## Not this plugin's job

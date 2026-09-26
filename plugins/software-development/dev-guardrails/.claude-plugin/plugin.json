@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "dev-guardrails",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Hooks that block unsafe shell and edit operations in flight (secret leaks, destructive git, non-conventional commits), plus a force-push-free sync for worktrees that fall behind their base branch.",
   "author": {
     "name": "CatylAI",

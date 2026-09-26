@@ -1,6 +1,6 @@
 {
   "name": "datadog-observability",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Datadog adapter for observability-core: Datadog MCP-first queries, traps and incident-record mappings for incident response and production triage, with a REST fallback.",
   "author": {
     "name": "CatylAI",

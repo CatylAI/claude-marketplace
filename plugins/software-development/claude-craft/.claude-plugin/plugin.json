@@ -1,6 +1,6 @@
 {
   "name": "claude-craft",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Design rules for systems built on the Claude API and Agent SDK (loop control, orchestration, tool interfaces, context economy, output contracts, enforcement, MCP, provenance, skill and plugin authoring), plus audits of skills, agents, hooks and whole Claude Code configurations.",
   "author": {
     "name": "CatylAI",

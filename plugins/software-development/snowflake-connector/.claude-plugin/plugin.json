@@ -1,6 +1,6 @@
 {
   "name": "snowflake-connector",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Connect Claude Code to your own Snowflake account with a read-only service role, via Snowflake's managed MCP server or the snow CLI, and query it with cost-bounded, verified SQL.",
   "author": {
     "name": "CatylAI",

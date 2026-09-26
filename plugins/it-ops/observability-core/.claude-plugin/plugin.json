@@ -1,6 +1,6 @@
 {
   "name": "observability-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vendor-neutral incident discipline while an incident is open: declare early, establish blast radius, and triage production errors into tracked work.",
   "author": {
     "name": "CatylAI",

@@ -4,8 +4,9 @@ Infrastructure standards for Terraform on AWS: how modules and state backends ar
 out, how IAM roles and CI credentials are designed, and what a human should be looking at
 when reviewing an infrastructure change.
 
-Works in **Claude Code** and in **Cowork** (Claude Code on the web). On the web, the skills
-work from HCL, policy JSON or plan output you paste in.
+Works in **Claude Code** (including Claude Code on the web) and in **Cowork and the claude.ai
+apps**. In Cowork and claude.ai, and wherever there is no checkout, the skills work from HCL,
+policy JSON or plan output you paste in.
 
 ## What it is
 
@@ -69,8 +70,8 @@ An unexpected account in the second answer is a reason to stop, not a detail.
 /plugin install terraform-aws@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
-claude.ai account and Claude Code loads it automatically as a synced plugin.
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
+claude.ai account and it loads automatically as a synced plugin.
 
 ## What's inside
 
@@ -83,10 +84,12 @@ claude.ai account and Claude Code loads it automatically as a synced plugin.
 Everything listed as a Skill loads on both surfaces. You can call one by name in Claude
 Code, or just describe what you want on either surface and let it trigger itself.
 
-**On the web, paste the input.** The commands the skills describe — `terraform plan`,
-`aws sts get-caller-identity`, a policy simulation — need a shell and live credentials. Without
-them, paste the HCL, policy JSON or plan output (`terraform show -json tfplan` is best) and the
-skill reviews that, listing the commands for you to run instead of reporting them as done.
+**Without a shell or credentials, paste the input.** The commands the skills describe — `terraform
+plan`, `aws sts get-caller-identity`, a policy simulation — need a shell and live credentials.
+Cowork and claude.ai have no shell, and Claude Code on the web has credentials only if its
+environment provides them. Without them, paste the HCL, policy JSON or plan output
+(`terraform show -json tfplan` is best) and the skill reviews that, listing the commands for
+you to run instead of reporting them as done.
 
 ## Layout
 
@@ -97,7 +100,9 @@ terraform-aws/
 │   ├── terraform-standards/
 │   │   ├── SKILL.md                           # modules, state, environments, pinning, plan discipline
 │   │   └── references/versions.md             # version floors; verify against current docs
-│   ├── aws-iam-boundaries/SKILL.md            # roles, assume-role chains, OIDC, boundaries, wildcards
+│   ├── aws-iam-boundaries/
+│   │   ├── SKILL.md                           # roles, assume-role chains, OIDC, boundaries, wildcards
+│   │   └── references/oidc-claims.md          # OIDC sub/aud claim shapes
 │   └── terraform-review/SKILL.md              # blast radius, replacement, state orphaning
 └── README.md
 ```

@@ -60,9 +60,9 @@ change `snowflake_mcp_url` later in `/config`. `snowflake_pat` is a sensitive fi
 appear in `/config`; to replace it, disable and re-enable the plugin in `/plugin` to get the
 prompt again (unverified). Start a new session so the server connects.
 
-**Cowork / web:** enable the plugin for your claude.ai account. Whether Cowork prompts for plugin
-settings is not documented; if it does not, add the same MCP server URL as a claude.ai custom
-connector.
+**Cowork and claude.ai:** enable the plugin for your claude.ai account. Whether Cowork prompts
+for plugin settings is not documented; if it does not, add the same MCP server URL as a
+claude.ai custom connector.
 
 ## What's inside
 

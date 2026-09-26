@@ -1,6 +1,6 @@
 {
   "name": "gcp-observability",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Google Cloud adapter for observability-core: where each incident and triage number lives in Cloud Logging, Monitoring and Error Reporting, read through Google's MCP servers or gcloud, and the GCP traps that skew it.",
   "author": {
     "name": "CatylAI",

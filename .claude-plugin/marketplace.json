@@ -7,15 +7,15 @@
     "url": "https://catylai.com"
   },
   "metadata": {
-    "description": "CatylAI business plugins for Claude Code: hiring, sales, marketing, software development, customer support, finance, IT operations and project management.",
-    "version": "0.5.0"
+    "description": "CatylAI plugins for Claude Code and Cowork: software development (code review, guardrails, standards, upgrades, Terraform on AWS), project management and issue tracking (GitHub issues, Jira), and IT operations (observability, incident response, runbooks and postmortems).",
+    "version": "0.5.1"
   },
   "plugins": [
     {
       "name": "claude-craft",
       "source": "./plugins/software-development/claude-craft",
       "description": "Design rules for systems built on the Claude API and Agent SDK (loop control, orchestration, tool interfaces, context economy, output contracts, enforcement, MCP, provenance, skill and plugin authoring), plus audits of skills, agents, hooks and whole Claude Code configurations.",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "keywords": [
         "agent-sdk",
         "architecture",
@@ -28,7 +28,7 @@
       "name": "code-review-core",
       "source": "./plugins/software-development/code-review-core",
       "description": "Git-diff code review with a machine-readable verdict: linters scan the changed lines, gated agents judge what linters cannot, and a validator plus a deterministic finalize step produce .code-review/VALIDATED.json. Posts nothing; pair with github-workflow or gitlab-workflow to publish.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "keywords": [
         "code-review",
         "static-analysis",
@@ -40,7 +40,7 @@
       "name": "datadog-observability",
       "source": "./plugins/it-ops/datadog-observability",
       "description": "Datadog adapter for observability-core: Datadog MCP-first queries, traps and incident-record mappings for incident response and production triage, with a REST fallback.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "datadog",
         "observability",
@@ -54,7 +54,7 @@
       "name": "dependency-upgrades",
       "source": "./plugins/software-development/dependency-upgrades",
       "description": "Cross-language dependency and runtime upgrades bounded by the deployment ceiling, gated on test adequacy, ranked by support status, one change per commit.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "dependencies",
         "upgrades",
@@ -68,7 +68,7 @@
       "name": "dev-guardrails",
       "source": "./plugins/software-development/dev-guardrails",
       "description": "Hooks that block unsafe shell and edit operations in flight (secret leaks, destructive git, non-conventional commits), plus a force-push-free sync for worktrees that fall behind their base branch.",
-      "version": "0.6.3",
+      "version": "0.6.4",
       "keywords": [
         "hooks",
         "safety",
@@ -82,7 +82,7 @@
       "name": "dev-mcp-servers",
       "source": "./plugins/software-development/dev-mcp-servers",
       "description": "Standard MCP servers for development work, starting with Playwright for driving a real browser. Claude Code only.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "keywords": [
         "mcp",
         "playwright",
@@ -96,7 +96,7 @@
       "name": "dev-standards",
       "source": "./plugins/software-development/dev-standards",
       "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions.",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "keywords": [
         "standards",
         "code-review",
@@ -109,7 +109,7 @@
       "name": "engineering-workflows",
       "source": "./plugins/software-development/engineering-workflows",
       "description": "Everyday engineering workflows: root-cause debugging with a read-only debugger agent, design intake and implementation plans, multi-worktree release trains, repository walkthroughs and session handoffs.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "engineering",
         "debugging",
@@ -123,7 +123,7 @@
       "name": "gcp-observability",
       "source": "./plugins/it-ops/gcp-observability",
       "description": "Google Cloud adapter for observability-core: where each incident and triage number lives in Cloud Logging, Monitoring and Error Reporting, read through Google's MCP servers or gcloud, and the GCP traps that skew it.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "gcp",
         "observability",
@@ -137,7 +137,7 @@
       "name": "github-issues",
       "source": "./plugins/project-management/github-issues",
       "description": "GitHub adapter for issue-tracker-core: the gh and GitHub MCP calls for the issue lifecycle, status labels and issue types, sub-issue parents and orphan sweeps, and Projects v2 boards.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "github",
         "issues",
@@ -151,7 +151,7 @@
       "name": "github-workflow",
       "source": "./plugins/software-development/github-workflow",
       "description": "GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "keywords": [
         "github",
         "pull-request",
@@ -165,7 +165,7 @@
       "name": "gitlab-workflow",
       "source": "./plugins/software-development/gitlab-workflow",
       "description": "GitLab transport for code review: merge request lifecycle over the glab CLI, posting review findings to an MR, and .gitlab-ci.yml authoring.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "gitlab",
         "merge-request",
@@ -179,7 +179,7 @@
       "name": "issue-tracker-core",
       "source": "./plugins/project-management/issue-tracker-core",
       "description": "Tracker-neutral issue discipline: an advisory pre-work gate, branch and PR title conventions, a seven-state status vocabulary, dedupe and parenting rules, and the comment trail.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "issues",
         "workflow",
@@ -192,7 +192,7 @@
       "name": "jira-tracker",
       "source": "./plugins/project-management/jira-tracker",
       "description": "Jira adapter for issue-tracker-core: the Jira calls for the pre-work gate, transitions, resolutions, the comment trail, JQL sweeps and parent hygiene, via the Atlassian MCP server, REST v3 or a pasted issue.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "jira",
         "atlassian",
@@ -206,7 +206,7 @@
       "name": "observability-core",
       "source": "./plugins/it-ops/observability-core",
       "description": "Vendor-neutral incident discipline while an incident is open: declare early, establish blast radius, and triage production errors into tracked work.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "incident",
         "observability",
@@ -219,7 +219,7 @@
       "name": "ops-workflows",
       "source": "./plugins/it-ops/ops-workflows",
       "description": "IT and SRE workflows: on-call runbooks built from repo evidence, and blameless incident postmortems with owned, dated action items.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "it",
         "sre",
@@ -233,7 +233,7 @@
       "name": "project-scaffold",
       "source": "./plugins/software-development/project-scaffold",
       "description": "Bootstrap a new project and run a proof of concept: repo layout, ADR adoption with a read-only ADR currency gate, and a POC lifecycle that graduates or kills on evidence.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "keywords": [
         "scaffolding",
         "adr",
@@ -246,7 +246,7 @@
       "name": "snowflake-connector",
       "source": "./plugins/software-development/snowflake-connector",
       "description": "Connect Claude Code to your own Snowflake account with a read-only service role, via Snowflake's managed MCP server or the snow CLI, and query it with cost-bounded, verified SQL.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "snowflake",
         "sql",
@@ -260,7 +260,7 @@
       "name": "terraform-aws",
       "source": "./plugins/software-development/terraform-aws",
       "description": "Infrastructure standards for Terraform on AWS: module and state-backend layout, IAM boundaries and OIDC trust for GitHub and GitLab CI, and the judgement half of a Terraform plan review.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "keywords": [
         "terraform",
         "aws",

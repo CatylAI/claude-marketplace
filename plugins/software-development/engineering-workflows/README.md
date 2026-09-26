@@ -18,7 +18,7 @@ stand on their own.
 /plugin install engineering-workflows@catylai
 ```
 
-**Cowork / web:** `/plugin` is not available in web sessions. Enable this plugin for your
+**Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your
 claude.ai account and it loads automatically as a synced plugin.
 
 ## Skills
@@ -40,13 +40,14 @@ claude.ai account and it loads automatically as a synced plugin.
 
 ## Surfaces
 
-Skills load in both Claude Code and Cowork (Claude Code on the web). Some parts are Claude Code
-only:
+Skills load in Claude Code (including Claude Code on the web) and in Cowork and the claude.ai
+apps. Some parts are Claude Code only:
 
-- **`debugger`** is a subagent, and subagents do not run in Cowork. There, `root-cause` falls back
-  to running the same hypothesis-driven investigation inline in the main thread.
-- **`release-train`** spawns and supervises worker sessions in git worktrees, which needs a local
-  shell and git. It has no web fallback.
+- **`debugger`** is a subagent, and plugin subagents do not run in Cowork or claude.ai. There,
+  `root-cause` falls back to running the same hypothesis-driven investigation inline in the main
+  thread.
+- **`release-train`** spawns and supervises worker sessions in git worktrees, which needs a
+  shell and git. It has no fallback in Cowork or claude.ai.
 
 The other skills read the repository when one is available. Without a checkout they work from
 what you paste: `design-intake` and `writing-plans` ask for the layout, spec and date and print

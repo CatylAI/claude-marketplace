@@ -51,7 +51,7 @@ jq --version        # jq, for reading the review artifacts
 
 `code-review-core` comes with it as a dependency.
 
-**Cowork / web:** enable the plugin for your claude.ai account. The skills load there; the script
+**Cowork and claude.ai:** enable the plugin for your claude.ai account. The skills load there; the script
 does not run without a shell.
 
 ## Layout
