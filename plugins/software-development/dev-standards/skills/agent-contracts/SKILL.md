@@ -1,6 +1,6 @@
 ---
 name: agent-contracts
-description: "Use when writing or checking a review agent's JSON artifact, or building a pipeline that consumes one. The JSON finding contract: document keys, the ten finding keys, id format and enums. Not for general schema design (use claude-craft:output-contracts)."
+description: "Use when writing or checking a review agent's JSON artifact, or building a pipeline that consumes one. The JSON finding contract: document keys, the ten finding keys, id format and enums. Not for general schema design (use agent-craft:output-contracts)."
 user-invocable: false
 license: MIT
 ---

@@ -126,7 +126,7 @@ Why each piece matters:
 
 The server's tools appear as `mcp__plugin_snowflake-connector_snowflake__<tool>`. Copy the exact
 names from `/mcp` before writing any permission rule or hook for them. For wiring questions beyond
-this, see `claude-craft:mcp-integration`.
+this, see `agent-craft:mcp-integration`.
 
 ## Step 4b: `snow` CLI with key-pair (fallback)
 

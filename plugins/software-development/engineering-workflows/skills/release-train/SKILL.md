@@ -14,7 +14,7 @@ The change to run: $ARGUMENTS
 An orchestrated release. One leader session supervises a small set of named worker subagents, each
 pinned to its own git worktree, all converging on one shared `release/<slug>` branch per repository.
 
-This is the procedural counterpart to `claude-craft:agent-orchestration`, which supplies the doctrine:
+This is the procedural counterpart to `agent-craft:agent-orchestration`, which supplies the doctrine:
 when delegation earns its token multiplier, hub-and-spoke routing, decomposition as the owner of
 coverage, complete context in the spawn prompt, review by a fresh instance. Read it first. This file
 specifies the mechanics that doctrine leaves open when the delegated work **writes to a shared
@@ -297,7 +297,7 @@ Before handing the release branch on:
 
    Every path should fall inside the union of the bundles' owned paths, planned new paths, and the
    hoisted shared edits. Anything else is unexplained and gets named in the report.
-3. Run the integration review with a fresh instance, per `claude-craft:agent-orchestration`.
+3. Run the integration review with a fresh instance, per `agent-craft:agent-orchestration`.
 4. Clean up: `git worktree remove .claude/worktrees/<bundle>` for each worker, then delete the
    local and remote worker branches. Deleting a local branch also removes its `releasetrainbase`
    key.
@@ -323,7 +323,7 @@ branch; hand it to `github-workflow:pr-lifecycle` to open the request that lands
 Request: "Fix the typo in the retry-policy docs."
 
 Correct: decline the fan-out and do it directly. One focused change has no independent subtasks to
-name, so the multi-agent multiplier buys nothing (`claude-craft:agent-orchestration` rule 1).
+name, so the multi-agent multiplier buys nothing (`agent-craft:agent-orchestration` rule 1).
 </example>
 
 <example>

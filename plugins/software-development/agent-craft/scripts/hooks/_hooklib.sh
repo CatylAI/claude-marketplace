@@ -114,7 +114,7 @@ hl_run_with_timeout() {
 # ---------------------------------------------------------------------------------------
 # The event surface.
 #
-# Sourced from claude-craft's own `deterministic-enforcement` skill (§4), which is the
+# Sourced from agent-craft's own `deterministic-enforcement` skill (§4), which is the
 # in-repo authority and lists roughly thirty events. The donor script this one replaces
 # knew nine, so a correct registration for `PostCompact` or `SubagentStart` was reported
 # as an unknown event.

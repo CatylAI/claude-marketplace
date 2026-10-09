@@ -1,6 +1,6 @@
 ---
 name: repo-walkthrough
-description: "Gives a read-only guided tour of an unfamiliar repository that leaves the reader able to contribute safely: a hypothesis from the manifests, a structure map, the patterns in use contrasted with the naive alternative, one flow traced end to end, and the traps a newcomer is likely to hit. Use when joining a project, orienting before a first change, or asked how a codebase works. Not for reviewing a specific diff (use code-review-core:review-scan); not for auditing Claude Code configuration (use claude-craft:config-audit)."
+description: "Gives a read-only guided tour of an unfamiliar repository that leaves the reader able to contribute safely: a hypothesis from the manifests, a structure map, the patterns in use contrasted with the naive alternative, one flow traced end to end, and the traps a newcomer is likely to hit. Use when joining a project, orienting before a first change, or asked how a codebase works. Not for reviewing a specific diff (use code-review-core:review-scan); not for auditing Claude Code configuration (use agent-craft:config-audit)."
 when_to_use: "walk me through this repo, explain this codebase, I am new to this project, how does this system work, where do I start, orient me in this repository"
 argument-hint: "[repository path; defaults to the current directory]"
 allowed-tools: Read, Glob, Grep

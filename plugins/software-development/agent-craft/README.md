@@ -1,4 +1,4 @@
-# claude-craft
+# agent-craft
 
 Architecture guidance for building systems on the Claude Agent SDK and the Messages API, plus
 audits that check an existing Claude Code configuration against it.
@@ -97,7 +97,7 @@ related skills:
 
 ```
 /plugin marketplace add CatylAI/claude-marketplace
-/plugin install claude-craft@catylai
+/plugin install agent-craft@catylai
 ```
 
 **Cowork and claude.ai:** `/plugin` is not available there. Enable this plugin for your

@@ -44,6 +44,7 @@ claude.ai account and it loads automatically as a synced plugin.
 | `test-structure` | Adding or reorganising tests: mock placement, layout, tiers, plus pytest and TypeScript runner rules. |
 | `precommit-standards` | Adopting or auditing a repo's `.pre-commit-config.yaml`. |
 | `secrets-management` | Adding a credential or wiring config into a deployment. |
+| `dependency-versions` | Writing any version into a manifest: new dependency, runtime pin, base image, Action, provider or chart. Latest stable at write time, anchored to the major, exact in the committed lockfile. |
 | `database-migrations` | Changing a database schema without downtime: expand/contract, lock-safe DDL, reversibility, deploy ordering. |
 
 ### For review agents
@@ -70,7 +71,8 @@ A review finding has three independent properties: severity, scope (`in_diff`) a
 - `code-review-core` agents preload `standards-first`, `code-review-standards`,
   `file-scope-rules`, `agent-contracts` and `test-structure`.
 - `dependency-upgrades` loads `test-structure`, `zero-tolerance-testing` and
-  `commit-standards`.
+  `commit-standards`; `dependency-versions` is the standard its inventory measures drift against.
+- `project-scaffold:project-new` applies `dependency-versions` when it writes manifests.
 
 ## Surfaces
 

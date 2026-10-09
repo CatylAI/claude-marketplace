@@ -68,7 +68,7 @@ Keep the iteration counter as a backstop and let `stop_reason` decide completion
 
 ## 5. Retry with the defect named, or escalate
 
-This skill owns the retry boundary; other claude-craft skills point here.
+This skill owns the retry boundary; other agent-craft skills point here.
 
 A retry that does not tell the model what was wrong reproduces the same failure at full cost.
 A retry payload carries three things: the original input, the output that failed, and the specific

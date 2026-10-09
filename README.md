@@ -20,7 +20,7 @@ isn't available: enable the plugin on your claude.ai account and it arrives as a
 
 | Plugin | What it does |
 |--------|--------------|
-| `claude-craft` | Agent SDK design rules, plus audits of skills, agents, hooks and config |
+| `agent-craft` | Agent SDK design rules, plus audits of skills, agents, hooks and config |
 | `code-review-core` | Forge-neutral review pipeline: detectors, judgement agents, one verdict owner |
 | `dependency-upgrades` | Dependency and runtime upgrades: support-status ranking, test-adequacy gate, one change per commit |
 | `dev-guardrails` | Hooks that block secret leaks, destructive git and non-conventional commits |
@@ -62,7 +62,7 @@ Skills load everywhere. Some parts of a plugin run only in Claude Code:
 | Local (stdio) MCP servers | yes | no |
 
 Plugins with Claude Code-only parts: `dev-guardrails` (hooks), `code-review-core` (agents and
-hooks), `dev-mcp-servers` (a local MCP server), and one agent each in `claude-craft`,
+hooks), `dev-mcp-servers` (a local MCP server), and one agent each in `agent-craft`,
 `engineering-workflows`, `project-scaffold`, `datadog-observability` and `gcp-observability`.
 Each plugin's README says what still works without them. Skills that read a repository or call a
 CLI also work from data you paste in.

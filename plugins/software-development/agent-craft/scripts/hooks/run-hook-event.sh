@@ -32,7 +32,7 @@
 # has no PreCompact branch at all while its sibling validator accepts the event.
 #
 # Every field below is grounded, in order of preference, in: this repo's dev-guardrails
-# hooks and their 376 passing tests; then claude-craft's own deterministic-enforcement
+# hooks and their 376 passing tests; then agent-craft's own deterministic-enforcement
 # skill. Fields carrying neither grounding are marked `[docs only]` in the comments and can
 # be overridden with --set.
 # ---------------------------------------------------------------------------------------

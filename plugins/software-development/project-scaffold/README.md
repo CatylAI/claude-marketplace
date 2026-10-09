@@ -14,7 +14,7 @@ concept that ends in a decision.
 | `poc-graduate` | Close the POC: apply `poc-validate`'s checks as a gate, then write a production plan or a kill record, and mark the contract closed. |
 
 For a repository that already has code, use the built-in `/init` to generate CLAUDE.md and
-`claude-craft:config-audit` to audit its Claude Code configuration.
+`agent-craft:config-audit` to audit its Claude Code configuration.
 
 ## Agent
 
@@ -60,7 +60,7 @@ that belongs to `github-workflow` or `gitlab-workflow`. It never dictates a POC'
   (Terraform); `pre-commit` for its hooks. Optional: `terraform-docs`, without which
   `project-new` leaves the `terraform_docs` hook commented out.
 - The `dev-standards` plugin, for `precommit-standards`.
-- Optional: `claude-craft`, for `config-audit`.
+- Optional: `agent-craft`, for `config-audit`.
 
 ## Install
 

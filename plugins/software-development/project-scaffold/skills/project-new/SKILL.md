@@ -1,6 +1,6 @@
 ---
 name: project-new
-description: "Scaffolds an empty directory into a runnable local project with a Makefile, pre-commit, CLAUDE.md and first commit. Use when starting a Python, TypeScript or Terraform project from nothing. Not for existing code (use /init, then claude-craft:config-audit); not for an experiment (use poc-start)."
+description: "Scaffolds an empty directory into a runnable local project with a Makefile, pre-commit, CLAUDE.md and first commit. Use when starting a Python, TypeScript or Terraform project from nothing. Not for existing code (use /init, then agent-craft:config-audit); not for an experiment (use poc-start)."
 when_to_use: "start a new project, scaffold an empty directory, new repo from scratch, project skeleton, bootstrap a new service"
 argument-hint: "[project-name]"
 allowed-tools: Read, Glob, Edit(./**), Bash(pwd), Bash(git init *), Bash(git init), Bash(git add *), Bash(git commit *), Bash(git status *), Bash(git branch --show-current), Bash(uv init *), Bash(uv add *), Bash(npm init *), Bash(npm install *), Bash(make *), Bash(pre-commit *), AskUserQuestion
@@ -31,7 +31,7 @@ Glob returns files, not directories, so judge by the files it lists.
   whether `.git/HEAD` was found: that means a repository already exists.
 - **Has real files** → stop. This skill writes a Makefile, README and `.gitignore` and would
   overwrite someone's work. Point the user to `/init` (generates CLAUDE.md from existing code)
-  and `claude-craft:config-audit` (audits existing Claude config), and end.
+  and `agent-craft:config-audit` (audits existing Claude config), and end.
 
 ## Step 2 — Ask what is being built
 
@@ -210,6 +210,12 @@ Conventions for contributors and Claude live in [CLAUDE.md](./CLAUDE.md).
 - **Editor and OS:** `.idea/`, `.vscode/`, `.DS_Store`.
 
 Lock files (`uv.lock`, `package-lock.json`) stay tracked; they make `make install` reproducible.
+
+Every version the scaffold writes (dependencies, dev tools, the runtime pin, a base image, an
+Action) follows `dev-standards:dependency-versions`: looked up from the registry at write time,
+anchored to its major, exact only in the lockfile. Load that skill with the Skill tool before
+writing the manifests; without it, run the lookups it names yourself rather than typing a version
+from memory.
 
 ## Step 7 — Add pre-commit
 

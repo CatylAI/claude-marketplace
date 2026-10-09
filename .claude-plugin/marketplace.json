@@ -8,14 +8,14 @@
   },
   "metadata": {
     "description": "CatylAI plugins for Claude Code and Cowork: software development (code review, guardrails, standards, upgrades, Terraform on AWS), project management and issue tracking (GitHub issues, Jira), and IT operations (observability, incident response, runbooks and postmortems).",
-    "version": "0.5.1"
+    "version": "0.6.0"
   },
   "plugins": [
     {
-      "name": "claude-craft",
-      "source": "./plugins/software-development/claude-craft",
+      "name": "agent-craft",
+      "source": "./plugins/software-development/agent-craft",
       "description": "Design rules for systems built on the Claude API and Agent SDK (loop control, orchestration, tool interfaces, context economy, output contracts, enforcement, MCP, provenance, skill and plugin authoring), plus audits of skills, agents, hooks and whole Claude Code configurations.",
-      "version": "0.5.3",
+      "version": "0.6.0",
       "keywords": [
         "agent-sdk",
         "architecture",
@@ -95,8 +95,8 @@
     {
       "name": "dev-standards",
       "source": "./plugins/software-development/dev-standards",
-      "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions.",
-      "version": "0.6.1",
+      "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions, and the latest-stable major-anchor rule for every new dependency.",
+      "version": "0.7.0",
       "keywords": [
         "standards",
         "code-review",
@@ -233,7 +233,7 @@
       "name": "project-scaffold",
       "source": "./plugins/software-development/project-scaffold",
       "description": "Bootstrap a new project and run a proof of concept: repo layout, ADR adoption with a read-only ADR currency gate, and a POC lifecycle that graduates or kills on evidence.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "keywords": [
         "scaffolding",
         "adr",
