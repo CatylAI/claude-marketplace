@@ -34,6 +34,10 @@ gh auth status      # the gh CLI, authenticated
 jq --version        # jq, for reading the review artifacts
 ```
 
+The `gh` login is for interactive, user-scoped actions in your own terminal. Unattended runs use the
+org GitHub App's installation token through `GITHUB_TOKEN` instead, and agents never start a
+`gh auth login` or `gh auth refresh` flow themselves; the order is in `dev-standards:secrets-management`.
+
 `gh` resolves the repository from the checkout's `origin` remote. Outside a checkout, pass
 `--repo <owner>/<repo>`. Without a shell (Cowork, claude.ai), each skill falls back to the GitHub MCP
 server's tools when it is connected. The skills list the tool for each step.

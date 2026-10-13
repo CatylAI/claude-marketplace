@@ -32,7 +32,8 @@ Behaviour worth knowing:
   Pass `--method GET` to send the parameters as a query string instead. `--paginate` adds
   `per_page=100` and follows every page. This holds in every release.
 - `gh auth login` requests `repo`, `read:org` and `gist` as its minimum scopes, not `project`.
-  Projects v2 commands need `gh auth refresh -s project` (or `-s read:project` for reads).
+  Projects v2 commands need `gh auth refresh -s project` (or `-s read:project` for reads), which
+  the user runs in their own terminal; an agent session has no browser for it.
 
 ## GitHub platform
 

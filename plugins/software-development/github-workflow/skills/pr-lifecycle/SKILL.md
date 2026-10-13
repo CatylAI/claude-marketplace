@@ -12,7 +12,10 @@ A pull request moves through a few states: unopened, draft, checks red, feedback
 merged. Each section below is the next command for one state. Merge strategy, required checks and
 branch protection belong to the repository, so read them rather than assuming.
 
-Run `gh auth status` first; an auth failure otherwise surfaces as a confusing 404. Outside a
+Run `gh auth status` first; an auth failure otherwise surfaces as a confusing 404. The `gh` login is
+for interactive, user-scoped work like this. For an unattended run, mint the org GitHub App token
+instead (see `dev-standards:secrets-management`, "GitHub access"), and never run `gh auth login`
+or `gh auth refresh` from an agent session. Outside a
 checkout, add `--repo <owner>/<repo>` to every `gh` call. In `gh api` paths, `{owner}` and `{repo}`
 are filled in from the current checkout, so no shell variables are needed. Shell variables do not
 survive between Bash calls anyway.

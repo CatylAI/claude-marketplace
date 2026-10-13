@@ -35,8 +35,9 @@ did not choose.
    `claude mcp add --transport http atlassian https://mcp.atlassian.com/v2/mcp`, then `/mcp` in
    a session to sign in. Use this or the connector, not both.
 3. **REST API token, Claude Code only.** Export `JIRA_SITE` (for example `yourco.atlassian.net`),
-   `JIRA_EMAIL` and `JIRA_API_TOKEN` in the shell that launches Claude Code. With 1Password, run
-   Claude Code under `op run -- claude` so `op://` references resolve.
+   `JIRA_EMAIL` and `JIRA_API_TOKEN` in the shell that launches Claude Code, from whichever secret
+   manager you use. With 1Password, for example, run Claude Code under `op run -- claude` so
+   `op://` references resolve.
 4. **Nothing connected.** The skills ask you to paste the issue, run the same checks on it, and
    print every change for you to make in Jira.
 

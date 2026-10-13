@@ -17,13 +17,12 @@ The `gh project` commands cover most work. Raw GraphQL (node ids, paging, mutati
 ## Access and scope
 
 `gh auth login` does not request the `project` scope, so check `gh auth status` first. If neither
-`project` nor `read:project` is listed:
+`project` nor `read:project` is listed, stop and ask the user to add it in their own terminal
+(`gh auth refresh -s project`, or `-s read:project` for a read-only sweep). It opens a browser,
+so do not run it from an agent session. The org GitHub App does not hold a Projects permission,
+so an unattended run cannot use it here; say so and ask the owner rather than widening the App.
 
-```bash
-gh auth refresh -s project
-```
-
-Use `-s read:project` for a read-only sweep. The error without it names the scope
+The error without the scope names it
 (`missing required scopes [read:project]`, or "The 'projectV2' field requires one of the following
 scopes"): the command is right and the token is not, so leave the command alone. On an
 organization board with the scope present, `Resource not accessible` usually means the token still

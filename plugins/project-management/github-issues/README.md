@@ -48,8 +48,9 @@ Each skill uses the first of these that works:
 Read-only `gh issue view`, `gh issue list`, `gh label list` and `gh project` list and view commands
 are pre-approved inside the skills; every write asks first.
 
-**Projects v2 needs an extra scope.** `gh auth login` does not request `project`. Add it with
-`gh auth refresh -s project`, or `-s read:project` for read-only sweeps.
+**Projects v2 needs an extra scope.** `gh auth login` does not request `project`. Add it yourself,
+in your own terminal, with `gh auth refresh -s project` (or `-s read:project` for read-only
+sweeps). The skills do not run it for you, because it opens a browser.
 
 ## Tell it about your repository
 

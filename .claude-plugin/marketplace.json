@@ -8,7 +8,7 @@
   },
   "metadata": {
     "description": "CatylAI plugins for Claude Code and Cowork: software development (code review, guardrails, standards, upgrades, Terraform on AWS), project management and issue tracking (GitHub issues, Jira), and IT operations (observability, incident response, runbooks and postmortems).",
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "plugins": [
     {
@@ -96,7 +96,7 @@
       "name": "dev-standards",
       "source": "./plugins/software-development/dev-standards",
       "description": "Engineering standards Claude would not apply by default: the review severity and diff-scope rules, the review-agent finding contract, Conventional Commits, the zero-warning done-gate, test structure, pre-commit and secret-path conventions, and the latest-stable major-anchor rule for every new dependency.",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "keywords": [
         "standards",
         "code-review",
@@ -137,7 +137,7 @@
       "name": "github-issues",
       "source": "./plugins/project-management/github-issues",
       "description": "GitHub adapter for issue-tracker-core: the gh and GitHub MCP calls for the issue lifecycle, status labels and issue types, sub-issue parents and orphan sweeps, and Projects v2 boards.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "github",
         "issues",
@@ -151,7 +151,7 @@
       "name": "github-workflow",
       "source": "./plugins/software-development/github-workflow",
       "description": "GitHub transport for code review: pull request lifecycle over the gh CLI, posting review findings to a PR, and GitHub Actions authoring.",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "keywords": [
         "github",
         "pull-request",
@@ -192,7 +192,7 @@
       "name": "jira-tracker",
       "source": "./plugins/project-management/jira-tracker",
       "description": "Jira adapter for issue-tracker-core: the Jira calls for the pre-work gate, transitions, resolutions, the comment trail, JQL sweeps and parent hygiene, via the Atlassian MCP server, REST v3 or a pasted issue.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "keywords": [
         "jira",
         "atlassian",
